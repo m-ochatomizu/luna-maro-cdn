@@ -1,11 +1,13 @@
 name: Instagram scheduled post
 
 on:
-  schedule:
-    # 15分おきに承認済み・投稿時刻を過ぎた投稿をチェックする。
-    # GitHub Actions の cron は数分の遅延があり得るため、投稿時刻ちょうどの
-    # 厳密な実行は保証されない(数分〜十数分のずれは許容する設計)。
-    - cron: "*/15 * * * *"
+  # 移行計画Step 0(凍結): 投稿実行は当面 Mac常駐launchd + publish.py に残す。
+  # このワークフローを定期実行すると、staging/ への書き込みが publish.py と
+  # 競合する(luna-maro-cdn を two writers が奪い合う)ため、投稿実行そのものを
+  # 新方式へ移す意思決定がされるまで schedule は無効化しておく。
+  # 有効化する場合はコメントアウトを外す:
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
