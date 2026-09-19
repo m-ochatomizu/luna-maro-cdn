@@ -1,0 +1,55 @@
+name: Instagram scheduled post
+
+on:
+  schedule:
+    # 15分おきに承認済み・投稿時刻を過ぎた投稿をチェックする。
+    # GitHub Actions の cron は数分の遅延があり得るため、投稿時刻ちょうどの
+    # 厳密な実行は保証されない(数分〜十数分のずれは許容する設計)。
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true にすると実際の投稿・シート更新は行わずログのみ出力する"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write # このリポジトリ(CDN)への staging 画像コミット/削除用
+
+concurrency:
+  group: instagram-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Write Google service account key
+        run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/sa.json"
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Run scheduled posting
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/sa.json
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          # 未指定の場合はスクリプトが実行時点(JST)の "YYYY-MM" をタブ名として使う
+          GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB }}
+          SOURCE_REPO: ${{ vars.SOURCE_REPO }} # 例: m-ochatomizu/luna-maro
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          CDN_REPO: ${{ github.repository }}
+          CDN_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IG_ACCESS_TOKEN_LUNA: ${{ secrets.IG_ACCESS_TOKEN_LUNA }}
+          IG_BUSINESS_ACCOUNT_ID_LUNA: ${{ secrets.IG_BUSINESS_ACCOUNT_ID_LUNA }}
+          IG_ACCESS_TOKEN_MARO: ${{ secrets.IG_ACCESS_TOKEN_MARO }}
+          IG_BUSINESS_ACCOUNT_ID_MARO: ${{ secrets.IG_BUSINESS_ACCOUNT_ID_MARO }}
+        run: python scripts/post_scheduled.py
