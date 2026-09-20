@@ -1,10 +1,11 @@
 name: Instagram scheduled post
 
 on:
-  # 移行計画Step 0(凍結): 投稿実行は当面 Mac常駐launchd + publish.py に残す。
-  # このワークフローを定期実行すると、staging/ への書き込みが publish.py と
-  # 競合する(luna-maro-cdn を two writers が奪い合う)ため、投稿実行そのものを
-  # 新方式へ移す意思決定がされるまで schedule は無効化しておく。
+  # 半兵衛レビューによりGO(2026-09-20)。ただし新旧を並行稼働させないため、
+  # README「本番切り替え」手順1(旧方式=Mac常駐launchd+publish.pyの停止)が
+  # 完了し、手順2・3(データ移行・dry_run検証)を終えるまでは schedule を
+  # 無効化しておく。有効にすると staging/ への書き込みが publish.py と
+  # 競合する(luna-maro-cdn を two writers が奪い合う)。
   # 有効化する場合はコメントアウトを外す:
   # schedule:
   #   - cron: "*/15 * * * *"
