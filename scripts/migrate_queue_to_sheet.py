@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 旧方式(luna-maro/distribution/queue/*.json)を新方式の投稿カレンダー
-(Google Sheets)の行フォーマットへ変換する、一度きりの移行スクリプト。
+(Google Sheets・1タブに通年分をまとめる設計)の行フォーマットへ変換する、
+一度きりの移行スクリプト。
 
-Sheetsへ直接書き込まず、月ごとのCSVを出力するだけにしてある。本番データの
+Sheetsへ直接書き込まず、単一のCSVを出力するだけにしてある。本番データの
 一括書き込みをスクリプトに無条件に任せず、人間が中身を見てから貼り付けられる
 ようにするため(移行計画で重視している「戻りの少なさ」と同じ理由:
 自動化の失敗が本番シートを壊さない)。
@@ -14,7 +15,7 @@ luna-maroリポジトリは古い状態(2026-09-13/14時点)のままで、直�
 新規候補が欠けている。
 
 使い方:
-    python3 migrate_queue_to_sheet.py /path/to/luna-maro/distribution/queue --out-dir ./out
+    python3 migrate_queue_to_sheet.py /path/to/luna-maro/distribution/queue --out schedule.csv
 """
 from __future__ import annotations
 
@@ -77,34 +78,30 @@ def convert(post: dict) -> dict:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("queue_dir", help="luna-maro/distribution/queue のパス")
-    parser.add_argument("--out-dir", default=".", help="月ごとのCSVを書き出す先")
+    parser.add_argument("--out", default="schedule.csv", help="出力するCSVのパス")
     args = parser.parse_args(argv)
 
     queue_dir = Path(args.queue_dir)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows_by_month: dict[str, list[dict]] = {}
+    rows: list[dict] = []
     skipped: list[tuple[str, str]] = []
 
     for path in sorted(queue_dir.glob("*.json")):
         try:
             post = json.loads(path.read_text(encoding="utf-8"))
-            row = convert(post)
+            rows.append(convert(post))
         except Exception as exc:  # noqa: BLE001 - 1件の変換失敗で全体を止めない
             skipped.append((path.name, str(exc)))
             continue
-        month = row["date"][:7]  # YYYY-MM
-        rows_by_month.setdefault(month, []).append(row)
 
-    for month, rows in sorted(rows_by_month.items()):
-        rows.sort(key=lambda r: (r["date"], r["time"]))
-        out_path = out_dir / f"{month}.csv"
-        with out_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"書き出し: {out_path}({len(rows)}件)")
+    rows.sort(key=lambda r: (r["date"], r["time"]))
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"書き出し: {out_path}({len(rows)}件)")
 
     if skipped:
         print("\n変換をスキップした(要確認)ファイル:", file=sys.stderr)
@@ -112,8 +109,8 @@ def main(argv: list[str]) -> int:
             print(f"  {name}: {reason}", file=sys.stderr)
 
     print(
-        "\n次の手順: 各CSVの内容を確認のうえ、Google Sheetsの対応する月タブへ"
-        "貼り付けてください(存在しない月タブは複製して作成)。"
+        "\n次の手順: CSVの内容を確認のうえ、Google Sheetsの投稿カレンダー(1タブ・"
+        "通年分)へファイル→インポート→アップロードで取り込んでください。"
         "status=posted の行は再投稿されないことをpost_scheduled.pyのロジックで"
         "再確認してから本番運用を開始してください。"
     )

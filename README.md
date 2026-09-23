@@ -8,7 +8,9 @@ LUNA MARO 配信インフラの公開ステージング領域。投稿直前の�
 1. **企画**: CreaterBrain(または人間)が投稿案(画像・キャプション・日時)を
    [投稿カレンダー(Google Sheets)](https://docs.google.com/spreadsheets/d/1rZc7y95WA_7m406On-HY60p3G8d46sySgtqrB23oS9Y/edit)
    に1行1投稿で追加する(`status = draft` または `ready_for_review`)。
-   月ごとにタブを分けて1ヶ月分まとめて計画できる。
+   1タブに通年分をまとめる設計で、月をまたいでまとめて計画できる
+   (行は`id`ごとに独立して処理されるため、タブを分けなくても1件の失敗が
+   他の行に波及しない設計は変わらない)。
 2. **人間の最終確認**: 人間がシート上で内容を確認し、問題なければ
    `status` を `approved` に変更する。これが唯一の承認操作。
 3. **自動投稿**: `.github/workflows/instagram-post.yml` が15分おきに実行され、
@@ -48,7 +50,7 @@ Secrets:
 
 Variables:
 - `SOURCE_REPO`: 例 `m-ochatomizu/luna-maro`
-- `GOOGLE_SHEET_TAB`(任意): 未設定なら実行時点(JST)の `YYYY-MM` をタブ名として使う
+- `GOOGLE_SHEET_TAB`(必須): 投稿カレンダーのタブ名(1タブに通年分をまとめる設計のため固定値)
 
 初回導入時は Actions の `workflow_dispatch` から `dry_run: true` で実行し、
 ログだけを確認してから定期実行を有効にすることを推奨する。
@@ -88,12 +90,13 @@ launchctl list | grep creatorbrain   # com.creatorbrain.lunamaro.publish が
 欠けている)。
 
 ```bash
-python3 scripts/migrate_queue_to_sheet.py /path/to/luna-maro/distribution/queue --out-dir ./out
+python3 scripts/migrate_queue_to_sheet.py /path/to/luna-maro/distribution/queue --out schedule.csv
 ```
 
-月ごとのCSVが出力されるので、内容を確認してから投稿カレンダーの対応する
-月タブへ貼り付ける。`status = posted` の行を貼り付けても本方式が
-再投稿することはない(`posted_at` が入っている行は処理対象外)。
+1本のCSVが出力されるので、内容を確認してから投稿カレンダーのタブへ
+「ファイル→インポート→アップロード」で取り込む。`status = posted` の行を
+取り込んでも本方式が再投稿することはない(`posted_at` が入っている行は
+処理対象外)。
 
 ### 3. 本方式の検証・本番切り替え
 

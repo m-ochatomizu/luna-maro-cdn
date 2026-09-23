@@ -371,7 +371,9 @@ def main() -> int:
     sa_path = env("GOOGLE_SERVICE_ACCOUNT_FILE")
     spreadsheet_id = env("GOOGLE_SHEET_ID")
     now = datetime.now(JST)
-    tab = env("GOOGLE_SHEET_TAB", required=False) or now.strftime("%Y-%m")
+    # 投稿カレンダーは1タブに通年分をまとめる設計(2026-09-24)。
+    # 月ごとにタブを分けない代わり、タブ名は固定で明示指定する。
+    tab = env("GOOGLE_SHEET_TAB")
 
     source_repo = env("SOURCE_REPO")
     source_token = env("SOURCE_REPO_TOKEN")
