@@ -61,8 +61,13 @@ Secrets:
 - `SOURCE_REPO_TOKEN`: 非公開リポジトリ `luna-maro` を読み取り専用で参照できるトークン
 - `IG_ACCESS_TOKEN`: 「ルナまろ」アカウントのInstagramログイン方式アクセストークン
   (旧方式で `~/CreatorBrain_secrets/instagram_token.txt` に保管されているものと同じ
-  性質のトークン。**60日で失効するため、更新の仕組みは別途検討が必要**。
-  詳細は後述)
+  性質のトークン)。初回はMeta for Developersの「LUNA MARO 配信」アプリ、または
+  旧方式で発行済みのトークンをそのまま設定する。以降は下記「アクセストークンの
+  自動更新」により自動で更新され続ける
+- `GH_ADMIN_TOKEN`: 上記 `IG_ACCESS_TOKEN` をGitHub Actionsが自動更新するための
+  権限。fine-grained PAT を作成し、対象リポジトリを `luna-maro-cdn` のみに限定、
+  Repository permissions の **Secrets を Read and write** のみ付与する(他の権限は
+  一切不要)。有効期限は無期限、または定期的に手動更新できる長さに設定する
 
 Variables:
 - `SOURCE_REPO`: 例 `m-ochatomizu/luna-maro`
@@ -71,21 +76,25 @@ Variables:
 初回導入時は Actions の `workflow_dispatch` から `dry_run: true` で実行し、
 ログだけを確認してから定期実行を有効にすることを推奨する。
 
-### 未解決の課題: アクセストークンの60日失効
+### アクセストークンの自動更新
 
-旧方式は `ig_token.py` が投稿の都度トークンを自己更新していた(有効期限が
-30日を切ると自動更新)。本方式にはまだこの仕組みがなく、`IG_ACCESS_TOKEN`
-というGitHub Secretは一度設定すると誰も更新しないままになる。**60日放置する
-と投稿が静かに止まる**(このプロジェクトがここまで繰り返し警戒してきた
-「静かに止まる」事故そのもの)。旧方式撤去(本番切り替え手順5)までに、
-以下のいずれかを決める必要がある:
+Instagramログイン方式の長期トークンは60日で失効する(放置すると投稿が
+静かに止まる、このプロジェクトが繰り返し警戒してきた事故そのもの)。
+旧方式は `ig_token.py` が投稿の都度トークンを自己更新していたが、本方式は
+GitHub Actionsの毎回クリーンなVMで動くため、更新した値をどこかへ永続化する
+必要がある。
 
-- 定期的なトークン更新用のGitHub Actionsを別途用意し、更新後のトークンを
-  GitHub Secrets APIで書き換える
-- 殿のMacに `ig_token.py refresh` だけを軽量に残し、更新後の値を手動で
-  Secretsへ反映する運用にする
+`.github/workflows/refresh-ig-token.yml` が**毎週月曜**に
+`scripts/refresh_ig_token.py` を実行し、Instagram APIでトークンを更新した
+うえで、GitHub Secrets API経由で `IG_ACCESS_TOKEN` を新しい値に書き換える
+(週1回なら60日の失効まで常に大きな余裕がある)。GitHub Secrets APIは
+デフォルトの `GITHUB_TOKEN` では操作できないため、専用の `GH_ADMIN_TOKEN`
+(Secrets権限のみのfine-grained PAT)を使う。
 
-半兵衛への次の相談事項として挙げる想定。
+更新に失敗した場合はGitHub Actionsの実行自体が失敗扱いになり、リポジトリの
+通知(既定でメール)で気づける。より積極的にSlackへ通知したい場合は、
+Slack Incoming Webhookの secrets を追加して `refresh_ig_token.py` の末尾に
+POSTを1行足すだけで対応できる(現時点では未実装)。
 
 ## 本番切り替え(旧Mac+launchd方式からの移行)
 
