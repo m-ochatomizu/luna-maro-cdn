@@ -45,14 +45,13 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           GOOGLE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/sa.json
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          # 未指定の場合はスクリプトが実行時点(JST)の "YYYY-MM" をタブ名として使う
+          # 投稿カレンダーは1タブに通年分をまとめる設計のため必須指定
           GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB }}
           SOURCE_REPO: ${{ vars.SOURCE_REPO }} # 例: m-ochatomizu/luna-maro
           SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
           CDN_REPO: ${{ github.repository }}
           CDN_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IG_ACCESS_TOKEN_LUNA: ${{ secrets.IG_ACCESS_TOKEN_LUNA }}
-          IG_BUSINESS_ACCOUNT_ID_LUNA: ${{ secrets.IG_BUSINESS_ACCOUNT_ID_LUNA }}
-          IG_ACCESS_TOKEN_MARO: ${{ secrets.IG_ACCESS_TOKEN_MARO }}
-          IG_BUSINESS_ACCOUNT_ID_MARO: ${{ secrets.IG_BUSINESS_ACCOUNT_ID_MARO }}
+          # 「ルナまろ」アカウント1つのみ。旧方式(ig_token.py)と同じ
+          # Instagramログイン方式のトークン(graph.instagram.com)。
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: python scripts/post_scheduled.py

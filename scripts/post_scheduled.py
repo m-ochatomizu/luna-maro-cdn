@@ -29,7 +29,18 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 
 JST = ZoneInfo("Asia/Tokyo")
-GRAPH_API_VERSION = os.environ.get("GRAPH_API_VERSION", "v21.0")
+# Instagram ログイン方式のAPI(graph.facebook.com ではない)。旧方式(publish.py)と
+# 同じホスト・バージョンに合わせてある。アカウントは常にトークンの持ち主(me)で、
+# ビジネスアカウントIDという概念自体が無い(取り違えて別アカウントへ出す事故を
+# そもそも起こせない設計。旧方式のコメントを踏襲)。
+IG_API = os.environ.get("IG_API", "https://graph.instagram.com/v23.0")
+IG_POLL_INTERVAL = 10   # 秒。旧方式(publish.py POLL_INTERVAL)と同じ
+IG_POLL_TIMEOUT = 300   # 秒。旧方式(publish.py POLL_TIMEOUT)と同じ
+# GitHub Pages の初回ビルドは数分かかることがある(旧方式で実測済み・2026-08-18)。
+# raw.githubusercontent.com ではなく Pages 経由にする理由も旧方式を踏襲
+# (画像として配信されることが仕様上明確なため・殿裁可2026-08-16)。
+REACH_POLL_INTERVAL = 10  # 秒
+REACH_TIMEOUT = 900       # 秒(15分)。旧方式(publish.py REACH_TIMEOUT)と同じ
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 logging.basicConfig(
@@ -193,28 +204,60 @@ def github_delete_file(repo: str, path: str, sha: str, message: str, token: str)
 
 
 # ---------------------------------------------------------------------------
-# Instagram Graph API
+# Instagram API (Instagram Login方式。常に me が対象)
 # ---------------------------------------------------------------------------
 
-def ig_create_container(business_id: str, image_url: str, caption: str, token: str) -> str:
-    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{business_id}/media"
+def wait_reachable(url: str) -> None:
+    """公開ステージングのURLがInstagram側から読める状態になるまで待つ。
+
+    GitHub Pagesは初回ビルド直後だけ極端に遅いことがある(旧方式で実測)。
+    ここを飛ばしてコンテナ作成へ進むと、Instagram側が画像を取得できず
+    ERRORになる。
+    """
+    deadline = time.monotonic() + REACH_TIMEOUT
+    last_status = None
+    while True:
+        try:
+            resp = requests.get(url, timeout=30)
+            last_status = resp.status_code
+            if resp.status_code == 200:
+                return
+        except requests.RequestException as exc:
+            last_status = str(exc)
+        if time.monotonic() > deadline:
+            raise RowError(
+                f"公開ステージングのURLへ{REACH_TIMEOUT}秒たっても到達できません: "
+                f"{url}(最後の状態: {last_status})"
+            )
+        time.sleep(REACH_POLL_INTERVAL)
+
+
+def ig_create_container(image_url: str, caption: str, alt: str, token: str) -> str:
+    url = f"{IG_API}/me/media"
 
     def _do():
         resp = requests.post(
             url,
-            data={"image_url": image_url, "caption": caption, "access_token": token},
+            data={
+                "image_url": image_url,
+                "caption": caption,
+                "alt_text": alt,
+                "access_token": token,
+            },
             timeout=60,
         )
         resp.raise_for_status()
         return resp.json()
 
     data = with_retry(_do, what="IG media create")
+    if not data.get("id"):
+        raise RowError(f"コンテナIDが返りませんでした: {data}")
     return data["id"]
 
 
-def ig_wait_until_ready(creation_id: str, token: str, timeout: float = 90.0) -> None:
-    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{creation_id}"
-    deadline = time.monotonic() + timeout
+def ig_wait_until_ready(creation_id: str, token: str) -> None:
+    url = f"{IG_API}/{creation_id}"
+    deadline = time.monotonic() + IG_POLL_TIMEOUT
     while True:
         resp = requests.get(
             url,
@@ -228,12 +271,12 @@ def ig_wait_until_ready(creation_id: str, token: str, timeout: float = 90.0) -> 
         if status == "ERROR":
             raise RowError(f"Instagramのメディア処理がERRORになりました(creation_id={creation_id})")
         if time.monotonic() > deadline:
-            raise RowError(f"Instagramのメディア処理がタイムアウトしました(status={status})")
-        time.sleep(3)
+            raise RowError(f"Instagramのメディア処理が{IG_POLL_TIMEOUT}秒たっても終わりません(最後の状態 {status})")
+        time.sleep(IG_POLL_INTERVAL)
 
 
-def ig_publish(business_id: str, creation_id: str, token: str) -> str:
-    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{business_id}/media_publish"
+def ig_publish(creation_id: str, token: str) -> str:
+    url = f"{IG_API}/me/media_publish"
 
     def _do():
         resp = requests.post(
@@ -245,19 +288,25 @@ def ig_publish(business_id: str, creation_id: str, token: str) -> str:
         return resp.json()
 
     data = with_retry(_do, what="IG media_publish")
+    if not data.get("id"):
+        raise RowError(f"メディアIDが返りませんでした: {data}")
     return data["id"]
 
 
-def get_ig_credentials(account: str) -> tuple[str, str]:
-    key = account.strip().upper()
-    token = os.environ.get(f"IG_ACCESS_TOKEN_{key}")
-    business_id = os.environ.get(f"IG_BUSINESS_ACCOUNT_ID_{key}")
-    if not token or not business_id:
-        raise RowError(
-            f"アカウント '{account}' 用の環境変数 "
-            f"IG_ACCESS_TOKEN_{key} / IG_BUSINESS_ACCOUNT_ID_{key} が未設定です"
+def ig_permalink(media_id: str, token: str) -> str:
+    """取得できなくても投稿自体は成功しているので、失敗しても空文字を返すだけにする
+    (旧方式 Instagram.permalink() と同じ判断: ここで例外を上げると
+    「出したのに失敗扱い」になり、二重投稿を招く)。"""
+    try:
+        resp = requests.get(
+            f"{IG_API}/{media_id}",
+            params={"fields": "permalink", "access_token": token},
+            timeout=30,
         )
-    return token, business_id
+        resp.raise_for_status()
+        return resp.json().get("permalink", "") or ""
+    except requests.RequestException:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +320,9 @@ class Row:
 
 
 REQUIRED_COLUMNS = [
-    "id", "date", "time", "account", "image_ref", "caption", "hashtags",
+    "id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt",
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
-    "error", "notes",
+    "permalink", "error", "notes",
 ]
 
 
@@ -314,16 +363,21 @@ def is_due(row: Row, now: datetime) -> bool:
     return scheduled <= now
 
 
+def pages_url(cdn_repo: str, cdn_path: str) -> str:
+    """旧方式と同じくGitHub Pages経由のURLを使う(raw.githubusercontent.comではない。
+    画像として配信されることが仕様上明確なため・殿裁可2026-08-16)。"""
+    owner, repo = cdn_repo.split("/", 1)
+    return f"https://{owner}.github.io/{repo}/{cdn_path}"
+
+
 def process_row(row: Row, *, source_repo: str, source_token: str,
-                 cdn_repo: str, cdn_token: str, dry_run: bool) -> dict:
+                 cdn_repo: str, cdn_token: str, ig_token: str, dry_run: bool) -> dict:
     """成功時は sheet に書き込むべき更新値を返す。失敗時は RowError を投げる。"""
     v = row.values
     account = v["account"].strip().lower()
     image_ref = v["image_ref"].strip()
     if not image_ref:
         raise RowError("image_ref が空です")
-
-    ig_token, ig_business_id = get_ig_credentials(account)
 
     log.info("[row %d] 画像を取得: %s", row.row_number, image_ref)
     content, _ = github_get_file(source_repo, image_ref, source_token)
@@ -338,20 +392,26 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
     put_sha = github_put_file(
         cdn_repo, cdn_path, content, f"staging: {basename}", cdn_token, existing_sha
     )
-    image_url = f"https://raw.githubusercontent.com/{cdn_repo}/main/{cdn_path}"
+    image_url = pages_url(cdn_repo, cdn_path)
 
     caption = v["caption"].strip()
     hashtags = v["hashtags"].strip()
+    alt = v["alt"].strip()
     caption_full = f"{caption}\n\n{hashtags}" if hashtags else caption
 
+    permalink = ""
     if dry_run:
         log.info("[row %d] DRY_RUN: Instagram投稿をスキップ (image_url=%s)", row.row_number, image_url)
         media_id = "DRY_RUN"
     else:
+        log.info("[row %d] 公開ステージングの到達待ち: %s", row.row_number, image_url)
+        wait_reachable(image_url)
+
         log.info("[row %d] Instagramへ投稿: account=%s", row.row_number, account)
-        creation_id = ig_create_container(ig_business_id, image_url, caption_full, ig_token)
+        creation_id = ig_create_container(image_url, caption_full, alt, ig_token)
         ig_wait_until_ready(creation_id, ig_token)
-        media_id = ig_publish(ig_business_id, creation_id, ig_token)
+        media_id = ig_publish(creation_id, ig_token)
+        permalink = ig_permalink(media_id, ig_token)
 
         log.info("[row %d] CDNから削除: %s/%s", row.row_number, cdn_repo, cdn_path)
         github_delete_file(cdn_repo, cdn_path, put_sha, f"staging: {basename} を削除", cdn_token)
@@ -361,6 +421,7 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
         "status": "posted",
         "posted_at": now_iso,
         "ig_media_id": media_id,
+        "permalink": permalink,
         "error": "",
     }
 
@@ -379,6 +440,7 @@ def main() -> int:
     source_token = env("SOURCE_REPO_TOKEN")
     cdn_repo = env("CDN_REPO")
     cdn_token = env("CDN_REPO_TOKEN")
+    ig_token = env("IG_ACCESS_TOKEN")
 
     sheets_token = get_sheets_token(sa_path)
     rows, col_index = load_rows(sheets_token, spreadsheet_id, tab)
@@ -398,6 +460,7 @@ def main() -> int:
                 source_token=source_token,
                 cdn_repo=cdn_repo,
                 cdn_token=cdn_token,
+                ig_token=ig_token,
                 dry_run=dry_run,
             )
         except Exception as exc:  # noqa: BLE001 - 1行の失敗で他行を止めないため意図的に広く捕捉

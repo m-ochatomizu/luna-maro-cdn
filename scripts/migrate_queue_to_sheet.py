@@ -26,9 +26,9 @@ import sys
 from pathlib import Path
 
 COLUMNS = [
-    "id", "date", "time", "account", "image_ref", "caption", "hashtags",
+    "id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt",
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
-    "error", "notes",
+    "permalink", "error", "notes",
 ]
 
 # 旧方式(post_queue.py)のstatus enum: draft/approved/published/failed
@@ -65,11 +65,13 @@ def convert(post: dict) -> dict:
         "image_ref": media.get("source_path", ""),
         "caption": post.get("caption", ""),
         "hashtags": " ".join(post.get("hashtags", [])),
+        "alt": media.get("alt", ""),
         "status": STATUS_MAP.get(post["status"], post["status"]),
         "approved_by": post.get("created_by", "") if post.get("approved_at") else "",
         "approved_at": post.get("approved_at", "") or "",
         "posted_at": published.get("published_at", "") or "",
         "ig_media_id": published.get("media_id", "") or "",
+        "permalink": published.get("permalink", "") or "",
         "error": failed.get("reason", "") or "",
         "notes": " ".join(filter(None, [character, media.get("era", ""), notes_extra])),
     }

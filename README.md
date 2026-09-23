@@ -16,8 +16,9 @@ LUNA MARO 配信インフラの公開ステージング領域。投稿直前の�
 3. **自動投稿**: `.github/workflows/instagram-post.yml` が15分おきに実行され、
    `scripts/post_scheduled.py` が「`status = approved` かつ予定日時を過ぎている」
    行だけを対象に、画像をこのリポジトリの `staging/` に一時公開して
-   Instagram Graph API で投稿し、完了後に `staging/` から削除、シートの
-   `status` を `posted`(失敗時は `failed`)に更新する。
+   Instagram API(Instagram ログイン方式・`graph.instagram.com`)で投稿し、
+   完了後に `staging/` から削除、シートの `status` を `posted`(失敗時は
+   `failed`)に更新する。
 
 各行は完全に独立して処理されるため、1件の失敗や修正が他の投稿・他の月の
 計画に影響しない。失敗した行は `error` 列に理由が入るので、修正して
@@ -31,12 +32,25 @@ LUNA MARO 配信インフラの公開ステージング領域。投稿直前の�
 
 ### シートの列
 
-`id, date, time, account, image_ref, caption, hashtags, status, approved_by, approved_at, posted_at, ig_media_id, error, notes`
+`id, date, time, account, image_ref, caption, hashtags, alt, status, approved_by, approved_at, posted_at, ig_media_id, permalink, error, notes`
 
-- `account`: `luna` または `maro`(Instagramアカウントの認証情報を選択するのに使う)
+- `account`: `luna` または `maro`(投稿する画像がどちらの猫の話題かを示す情報。
+  Instagramアカウントは1つしかなく認証情報の選択には使わない。下記参照)
 - `image_ref`: 非公開リポジトリ `luna-maro` 内の画像パス
+- `alt`: 画像の代替テキスト(視覚障害者向け説明文)。旧方式では全投稿に必須で
+  付けていたため、本方式でも引き継ぐ
 - `status`: `draft` → `ready_for_review` → `approved` → `posted` / `failed`
   (このスクリプトが書き込むのは `approved` の行に対する `posted`/`failed` のみ)
+- `permalink`: 投稿成功後にInstagramの公開URLを自動で書き込む(取得できなくても
+  投稿自体の成否には影響させない)
+
+**Instagramアカウントは「ルナまろ」1つのみ。** 旧方式(`ig_token.py`/
+`publish.py`)を調査した結果、LUNA/MARO用に別アカウント・別トークンが
+存在するわけではなく、単一のInstagramログイン方式トークンで `me/media` へ
+投稿する設計だった(取り違えて別アカウントへ出す事故をそもそも起こせない
+ようにするため、旧方式はビジネスアカウントIDを一切埋め込んでいない)。
+本方式もこれに合わせ、`account`列は投稿先の選択には使わず、情報整理用の
+メタデータとして扱う。
 
 ### 必要なリポジトリ設定(Settings → Secrets and variables → Actions)
 
@@ -45,8 +59,10 @@ Secrets:
   対象シートをこのサービスアカウントに編集者共有しておくこと。
 - `GOOGLE_SHEET_ID`: 投稿カレンダーのスプレッドシートID
 - `SOURCE_REPO_TOKEN`: 非公開リポジトリ `luna-maro` を読み取り専用で参照できるトークン
-- `IG_ACCESS_TOKEN_LUNA` / `IG_BUSINESS_ACCOUNT_ID_LUNA`
-- `IG_ACCESS_TOKEN_MARO` / `IG_BUSINESS_ACCOUNT_ID_MARO`
+- `IG_ACCESS_TOKEN`: 「ルナまろ」アカウントのInstagramログイン方式アクセストークン
+  (旧方式で `~/CreatorBrain_secrets/instagram_token.txt` に保管されているものと同じ
+  性質のトークン。**60日で失効するため、更新の仕組みは別途検討が必要**。
+  詳細は後述)
 
 Variables:
 - `SOURCE_REPO`: 例 `m-ochatomizu/luna-maro`
@@ -54,6 +70,22 @@ Variables:
 
 初回導入時は Actions の `workflow_dispatch` から `dry_run: true` で実行し、
 ログだけを確認してから定期実行を有効にすることを推奨する。
+
+### 未解決の課題: アクセストークンの60日失効
+
+旧方式は `ig_token.py` が投稿の都度トークンを自己更新していた(有効期限が
+30日を切ると自動更新)。本方式にはまだこの仕組みがなく、`IG_ACCESS_TOKEN`
+というGitHub Secretは一度設定すると誰も更新しないままになる。**60日放置する
+と投稿が静かに止まる**(このプロジェクトがここまで繰り返し警戒してきた
+「静かに止まる」事故そのもの)。旧方式撤去(本番切り替え手順5)までに、
+以下のいずれかを決める必要がある:
+
+- 定期的なトークン更新用のGitHub Actionsを別途用意し、更新後のトークンを
+  GitHub Secrets APIで書き換える
+- 殿のMacに `ig_token.py refresh` だけを軽量に残し、更新後の値を手動で
+  Secretsへ反映する運用にする
+
+半兵衛への次の相談事項として挙げる想定。
 
 ## 本番切り替え(旧Mac+launchd方式からの移行)
 
