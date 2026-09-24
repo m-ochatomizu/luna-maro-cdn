@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / list / approve"
+        description: "append / clear / list / approve / show"
         required: true
         default: "list"
       row_number:
         description: "action=clear のときのみ: クリアする行番号"
         required: false
       post_id:
-        description: "action=approve のときのみ: 承認するpost_id"
+        description: "action=approve/show のときのみ: 対象のpost_id"
         required: false
       approved_by:
         description: "action=approve のときのみ: 承認者表記(省略可)"
@@ -53,6 +53,9 @@ jobs:
               ;;
             list)
               python scripts/sheet_test_row.py list
+              ;;
+            show)
+              python scripts/sheet_test_row.py show "$POST_ID"
               ;;
             approve)
               if [ -n "$APPROVED_BY" ]; then

@@ -114,6 +114,17 @@ def list_rows(token: str, spreadsheet_id: str, tab: str) -> None:
         print(f"行{i}: id={post_id!r} status={status!r} date={date!r}")
 
 
+def show_row(token: str, spreadsheet_id: str, tab: str, post_id: str) -> None:
+    rows = get_rows(token, spreadsheet_id, tab)
+    for i, row in enumerate(rows, start=1):
+        if row and row[0] == post_id:
+            padded = row + [""] * (len(COLUMNS) - len(row))
+            for name, value in zip(COLUMNS, padded):
+                print(f"{name}: {value!r}")
+            return
+    raise SystemExit(f"id={post_id!r} の行が見つかりません")
+
+
 def col_letter(index: int) -> str:
     letters = ""
     index += 1
@@ -170,6 +181,10 @@ def main(argv: list[str]) -> int:
         clear_row(token, spreadsheet_id, tab, int(argv[1]))
     elif argv[0] == "list":
         list_rows(token, spreadsheet_id, tab)
+    elif argv[0] == "show":
+        if len(argv) < 2:
+            raise SystemExit("show には post_id が必要です: show POST_ID")
+        show_row(token, spreadsheet_id, tab, argv[1])
     elif argv[0] == "approve":
         if len(argv) < 2:
             raise SystemExit("approve には post_id が必要です: approve POST_ID [APPROVED_BY]")
