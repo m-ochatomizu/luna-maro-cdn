@@ -1,14 +1,20 @@
-name: Sheet test row (dry_run検証用・使い捨て)
+name: Sheet admin (append/clear/list/approve)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append または clear"
+        description: "append / clear / list / approve"
         required: true
-        default: "append"
+        default: "list"
       row_number:
         description: "action=clear のときのみ: クリアする行番号"
+        required: false
+      post_id:
+        description: "action=approve のときのみ: 承認するpost_id"
+        required: false
+      approved_by:
+        description: "action=approve のときのみ: 承認者表記(省略可)"
         required: false
 
 permissions:
@@ -36,9 +42,26 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/sa.json
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB }}
+          ACTION: ${{ github.event.inputs.action }}
+          ROW_NUMBER: ${{ github.event.inputs.row_number }}
+          POST_ID: ${{ github.event.inputs.post_id }}
+          APPROVED_BY: ${{ github.event.inputs.approved_by }}
         run: |
-          if [ "${{ github.event.inputs.action }}" = "clear" ]; then
-            python scripts/sheet_test_row.py clear "${{ github.event.inputs.row_number }}"
-          else
-            python scripts/sheet_test_row.py append
-          fi
+          case "$ACTION" in
+            clear)
+              python scripts/sheet_test_row.py clear "$ROW_NUMBER"
+              ;;
+            list)
+              python scripts/sheet_test_row.py list
+              ;;
+            approve)
+              if [ -n "$APPROVED_BY" ]; then
+                python scripts/sheet_test_row.py approve "$POST_ID" "$APPROVED_BY"
+              else
+                python scripts/sheet_test_row.py approve "$POST_ID"
+              fi
+              ;;
+            *)
+              python scripts/sheet_test_row.py append
+              ;;
+          esac
