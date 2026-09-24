@@ -1,0 +1,33 @@
+name: Refresh Instagram access token
+
+on:
+  schedule:
+    # 週1回。Instagramログイン方式の長期トークンは60日で失効するため、
+    # 週1回の更新なら常に60日よりはるかに手前で更新され続ける
+    # (旧方式ig_token.pyのREFRESH_UNDER_DAYS=30より安全側)。
+    - cron: "0 3 * * 1" # 毎週月曜 12:00 JST
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Refresh IG access token
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          CDN_REPO: ${{ github.repository }}
+          # Secrets APIはデフォルトのGITHUB_TOKENでは操作できないため専用PATが要る。
+          # README「アクセストークンの自動更新」参照。
+          GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: python scripts/refresh_ig_token.py
