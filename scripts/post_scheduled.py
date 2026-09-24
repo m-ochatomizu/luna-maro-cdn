@@ -168,8 +168,26 @@ def github_get_file(repo: str, path: str, token: str) -> tuple[bytes, str | None
     data = with_retry(_do, what=f"GitHub contents.get {repo}/{path}")
     if data is None:
         return b"", None
-    content = base64.b64decode(data["content"])
+    if data.get("encoding") == "base64" and data.get("content"):
+        content = base64.b64decode(data["content"])
+    else:
+        # Contents APIは1MBを超えるファイルの中身をインライン返却しない
+        # (encoding: "none", content: "" になるだけで、404にはならない)。
+        # Git Blobs APIならサイズ上限がはるかに大きい(100MB)ため、そちらを使う。
+        content = github_get_blob(repo, data["sha"], token)
     return content, data["sha"]
+
+
+def github_get_blob(repo: str, sha: str, token: str) -> bytes:
+    url = f"https://api.github.com/repos/{repo}/git/blobs/{sha}"
+
+    def _do():
+        resp = requests.get(url, headers=_gh_headers(token), timeout=60)
+        resp.raise_for_status()
+        return resp.json()
+
+    data = with_retry(_do, what=f"GitHub blobs.get {repo}/{sha}")
+    return base64.b64decode(data["content"])
 
 
 def github_put_file(
