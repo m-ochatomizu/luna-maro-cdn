@@ -1,0 +1,44 @@
+name: Sheet test row (dry_run検証用・使い捨て)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "append または clear"
+        required: true
+        default: "append"
+      row_number:
+        description: "action=clear のときのみ: クリアする行番号"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Write Google service account key
+        run: echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/sa.json"
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Run
+        env:
+          GOOGLE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/sa.json
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB }}
+        run: |
+          if [ "${{ github.event.inputs.action }}" = "clear" ]; then
+            python scripts/sheet_test_row.py clear "${{ github.event.inputs.row_number }}"
+          else
+            python scripts/sheet_test_row.py append
+          fi
