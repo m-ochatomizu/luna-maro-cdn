@@ -29,11 +29,15 @@ GitHub Actions(sheet-admin.yml)から呼ばれる想定で、Cowork側の投稿�
                                         # をキーに持つファイル(notesは省略可)。
                                         # キャプションの改行・絵文字・引用符を
                                         # シェル引数展開なしで安全に渡すため。
+                                        # caption/alt/hashtagsのブランド規則
+                                        # (旧post_queue.pyのvalidate()相当)を
+                                        # ここで検証し、違反があれば追加しない。
     python3 sheet_admin.py approve POST_ID [APPROVED_BY]
                                         # 指定したidの行の status を approved にし、
                                         # approved_by/approved_at を記録する
                                         # (半兵衛レビュー・殿承認を経た本番行に対して
-                                        # 使う。テスト行専用ではない)
+                                        # 使う。テスト行専用ではない)。本文に絵文字が
+                                        # 無い場合は拒否する(旧post_queue.approve()と同じ)。
 """
 from __future__ import annotations
 
@@ -54,6 +58,56 @@ COLUMNS = [
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
     "permalink", "error", "notes",
 ]
+
+# 以下、旧方式 post_queue.py の validate()/approve() が担っていたブランド運用の
+# 検証ルールを移植したもの(設計書§2.2・§2.4・§2.8、殿指示 2026-08-15/2026-08-20)。
+# post_scheduled.py(投稿実行)はSheetの内容を検証しない前提のため、propose/approve
+# の入口で防がないとブランド規則が仕組みで守られなくなる(「検証で縛るのは
+# 忘れても仕組みで防ぐため」という旧方式のコメントをそのまま踏襲)。
+CAPTION_MAX = 100
+ALT_MAX = 100
+HASHTAG_MAX = 10
+BRAND_HASHTAG = "#ルナまろ🐾"
+DEPRECATED_HASHTAGS = ("#ルナとまろ",)
+
+_EMOJI_RANGES = (
+    (0x1F300, 0x1FAFF),
+    (0x2600, 0x27BF),
+    (0x2B00, 0x2BFF),
+    (0x1F000, 0x1F0FF),
+)
+
+
+def has_emoji(text: str) -> bool:
+    return any(any(lo <= ord(c) <= hi for lo, hi in _EMOJI_RANGES) for c in text or "")
+
+
+def validate_candidate(*, caption: str, hashtags: str, alt: str) -> None:
+    """propose(draft追加)の入口で弾く。承認可否に関わる絵文字チェックはここでは
+    行わない(旧方式と同じく、書きかけの下書きを弾かないため。approve側で見る)。"""
+    if len(caption) > CAPTION_MAX:
+        raise SystemExit(f"caption が{len(caption)}字あります。{CAPTION_MAX}字以内にしてください。")
+
+    if not alt or not alt.strip():
+        raise SystemExit("alt(代替テキスト)が空です。全投稿に必須です。")
+    if len(alt) > ALT_MAX:
+        raise SystemExit(f"alt が{len(alt)}字あります。{ALT_MAX}字以内にしてください。")
+    if "#" in alt or "http" in alt:
+        raise SystemExit("alt にハッシュタグやURLを含めないでください。見えるものの説明だけを書きます。")
+    if has_emoji(alt):
+        raise SystemExit("alt に絵文字を入れないでください(読み上げソフトが絵文字名を読み上げてしまいます)。")
+
+    tags = [t for t in hashtags.split() if t]
+    if len(tags) > HASHTAG_MAX:
+        raise SystemExit(f"hashtags が{len(tags)}個あります。{HASHTAG_MAX}個以内にしてください。")
+    for t in tags:
+        if not t.startswith("#"):
+            raise SystemExit(f"ハッシュタグは # で始めてください: {t!r}")
+    if BRAND_HASHTAG not in tags:
+        raise SystemExit(f"ブランドの識別タグ {BRAND_HASHTAG} が入っていません。hashtags に加えてください。")
+    for t in tags:
+        if t in DEPRECATED_HASHTAGS:
+            raise SystemExit(f"{t} は使わないと決めたタグです。{BRAND_HASHTAG} へ一本化してください。")
 
 # post_scheduled.py の REQUIRED_COLUMNS と同じ並び(A〜P列)
 TEST_ROW = [
@@ -174,6 +228,7 @@ def propose_row(
     """status=draft で新しい候補行を追加する(Cowork側の投稿案生成タスク用)。
     半兵衛レビュー・殿承認は別途status=approvedへの変更(approveコマンド)で行う
     ため、ここでは絶対にapprovedを書き込まない。"""
+    validate_candidate(caption=caption, hashtags=hashtags, alt=alt)
     rows = get_rows(token, spreadsheet_id, tab)
     for row in rows:
         if row and row[0] == post_id:
@@ -199,12 +254,24 @@ def propose_row(
 def approve_row(token: str, spreadsheet_id: str, tab: str, post_id: str, approved_by: str) -> None:
     rows = get_rows(token, spreadsheet_id, tab)
     row_number = None
+    matched_row: list[str] = []
     for i, row in enumerate(rows, start=1):
         if row and row[0] == post_id:
             row_number = i
+            matched_row = row
             break
     if row_number is None:
         raise SystemExit(f"id={post_id!r} の行が見つかりません")
+
+    caption_i = COLUMNS.index("caption")
+    caption = matched_row[caption_i] if len(matched_row) > caption_i else ""
+    if not has_emoji(caption):
+        # 旧方式 post_queue.approve() と同じ判断: 絵文字チェックは下書き保存時ではなく
+        # 承認の瞬間に行う(殿指示 2026-08-20)。書き直し中の下書きを弾かないため。
+        raise SystemExit(
+            f"{post_id} の本文に絵文字がありません(殿指示 2026-08-20)。"
+            f"1〜2つ入れてから承認してください。現在の本文: {caption!r}"
+        )
 
     status_col = col_letter(COLUMNS.index("status"))
     approved_by_col = col_letter(COLUMNS.index("approved_by"))
