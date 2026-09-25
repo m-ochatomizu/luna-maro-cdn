@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/list/approve)
+name: Sheet admin (append/clear/list/used/show/approve/propose)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / list / approve / show"
+        description: "append / clear / list / used / show / approve / propose"
         required: true
         default: "list"
       row_number:
@@ -15,6 +15,12 @@ on:
         required: false
       approved_by:
         description: "action=approve のときのみ: 承認者表記(省略可)"
+        required: false
+      propose_json:
+        description: >-
+          action=propose のときのみ: 候補1件分のJSON(キー: id, date, time,
+          account, image_ref, caption, hashtags, alt, notes(省略可))。
+          Cowork側の投稿案生成タスクが呼ぶ想定。
         required: false
 
 permissions:
@@ -37,6 +43,12 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 
+      - name: Write propose payload (action=propose のときのみ使う)
+        if: github.event.inputs.action == 'propose'
+        run: echo "$PROPOSE_JSON" > "$RUNNER_TEMP/propose.json"
+        env:
+          PROPOSE_JSON: ${{ github.event.inputs.propose_json }}
+
       - name: Run
         env:
           GOOGLE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/sa.json
@@ -46,25 +58,32 @@ jobs:
           ROW_NUMBER: ${{ github.event.inputs.row_number }}
           POST_ID: ${{ github.event.inputs.post_id }}
           APPROVED_BY: ${{ github.event.inputs.approved_by }}
+          PROPOSE_JSON_PATH: ${{ runner.temp }}/propose.json
         run: |
           case "$ACTION" in
             clear)
-              python scripts/sheet_test_row.py clear "$ROW_NUMBER"
+              python scripts/sheet_admin.py clear "$ROW_NUMBER"
               ;;
             list)
-              python scripts/sheet_test_row.py list
+              python scripts/sheet_admin.py list
+              ;;
+            used)
+              python scripts/sheet_admin.py used
               ;;
             show)
-              python scripts/sheet_test_row.py show "$POST_ID"
+              python scripts/sheet_admin.py show "$POST_ID"
               ;;
             approve)
               if [ -n "$APPROVED_BY" ]; then
-                python scripts/sheet_test_row.py approve "$POST_ID" "$APPROVED_BY"
+                python scripts/sheet_admin.py approve "$POST_ID" "$APPROVED_BY"
               else
-                python scripts/sheet_test_row.py approve "$POST_ID"
+                python scripts/sheet_admin.py approve "$POST_ID"
               fi
               ;;
+            propose)
+              python scripts/sheet_admin.py propose "$PROPOSE_JSON_PATH"
+              ;;
             *)
-              python scripts/sheet_test_row.py append
+              python scripts/sheet_admin.py append
               ;;
           esac
