@@ -4,8 +4,12 @@
 
 post_scheduled.py と同じ Google Sheets API 認証(サービスアカウント)を
 再利用する。本番の投稿実行ロジック(post_scheduled.py)には一切関与しない。
-GitHub Actions(sheet-admin.yml)から呼ばれる想定で、Cowork側の投稿案生成
-タスクが候補行を追加する際にも使う(propose)。
+GitHub Actions(sheet-admin.yml)から呼ばれる想定。
+
+役割分担: Cowork側の投稿案生成タスクは内容(キャラクター・素材・キャプション・
+ハッシュタグ・ALT)を決めるところまでを担当し、git/GitHub操作(このツールの
+呼び出しを含む)は一切行わない。候補内容をCode(Claude Code)に渡し、Codeが
+propose(空き枠の割り当てとSheetへの追加)・approve等を実行する。
 
 使い方:
     python3 sheet_admin.py append      # dry_run検証用のテスト行を末尾に追加
@@ -22,16 +26,26 @@ GitHub Actions(sheet-admin.yml)から呼ばれる想定で、Cowork側の投稿�
     python3 sheet_admin.py show POST_ID
                                         # 指定idの全列を表示
     python3 sheet_admin.py propose JSON_FILE
-                                        # status=draft で新しい候補行を1件追加
-                                        # (Cowork側の投稿案生成タスクが使う)。
-                                        # JSON_FILEはid/date/time/account/
-                                        # image_ref/caption/hashtags/alt/notes
-                                        # をキーに持つファイル(notesは省略可)。
-                                        # キャプションの改行・絵文字・引用符を
-                                        # シェル引数展開なしで安全に渡すため。
-                                        # caption/alt/hashtagsのブランド規則
-                                        # (旧post_queue.pyのvalidate()相当)を
-                                        # ここで検証し、違反があれば追加しない。
+                                        # JSON_FILEがオブジェクトなら、id/date/time
+                                        # まで指定済みの候補を1件そのまま追加する
+                                        # (手動テスト用)。
+                                        # JSON_FILEが配列なら、Cowork側が内容だけ
+                                        # (account/image_ref/caption/hashtags/alt/
+                                        # notes省略可)決めた候補群に、次の空き投稿枠
+                                        # (火・金19:00)を順番に割り当てて追加する。
+                                        # id/date/timeはこちらで自動採番するため
+                                        # 含めない。90日再利用禁止(image_ref)に
+                                        # かかる候補は追加せずスキップする。
+                                        # 1件の失敗が他の候補に波及しないよう、
+                                        # 候補ごとに独立して結果を報告する。
+                                        # git/GitHub操作はCowork側では行わず、
+                                        # この経路(Code側からの呼び出し)に一本化する。
+                                        # いずれの形式でもキャプションの改行・絵文字・
+                                        # 引用符をシェル引数展開なしで安全に渡すため
+                                        # JSONファイル経由にしている。caption/alt/
+                                        # hashtagsのブランド規則(旧post_queue.pyの
+                                        # validate()相当)をpropose_row内で検証し、
+                                        # 違反があれば追加しない。
     python3 sheet_admin.py approve POST_ID [APPROVED_BY]
                                         # 指定したidの行の status を approved にし、
                                         # approved_by/approved_at を記録する
@@ -44,7 +58,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -108,6 +122,113 @@ def validate_candidate(*, caption: str, hashtags: str, alt: str) -> None:
     for t in tags:
         if t in DEPRECATED_HASHTAGS:
             raise SystemExit(f"{t} は使わないと決めたタグです。{BRAND_HASHTAG} へ一本化してください。")
+
+
+# 以下、旧方式 post_queue.py の next_slot()/history.py の in_cooldown() を移植したもの。
+# 「Coworkは内容だけ決め、枠の割り当てとSheetへの書き込み(git/GitHub操作)はCode側が
+# 担当する」という役割分担のため、空き枠の判定にはSheetの現在の状態を読む必要があり、
+# それを行うのは投稿実行(post_scheduled.py)と同じくこちら側の役目になる。
+SLOT_WEEKDAYS = (1, 4)  # 火・金(月曜=0)。増やさない
+SLOT_HOUR = 19
+SLOT_MINUTE = 0
+REPOST_COOLDOWN_DAYS = 90
+
+
+def next_slot(after: datetime) -> datetime:
+    """`after` より後で最初に来る投稿枠(火・金19:00 JST)を返す。"""
+    candidate = after.replace(hour=SLOT_HOUR, minute=SLOT_MINUTE, second=0, microsecond=0)
+    if candidate <= after:
+        candidate += timedelta(days=1)
+    while candidate.weekday() not in SLOT_WEEKDAYS:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def make_post_id(slot: datetime, account: str) -> str:
+    return f"{slot:%Y%m%d_%H%M}_{account.lower()}_01"
+
+
+def occupied_slots(rows: list[list[str]]) -> set[tuple[str, str]]:
+    """既に埋まっている(date, time)の集合。statusを問わず埋まっているとみなす
+    (下書き中の枠も次の候補が二重に狙わないようにするため)。"""
+    date_i, time_i = COLUMNS.index("date"), COLUMNS.index("time")
+    occupied = set()
+    for row in rows:
+        if not row or not row[0]:
+            continue
+        date = row[date_i] if len(row) > date_i else ""
+        time = row[time_i] if len(row) > time_i else ""
+        if date and time:
+            occupied.add((date, time))
+    return occupied
+
+
+def last_posted_at(rows: list[list[str]], image_ref: str) -> datetime | None:
+    image_ref_i = COLUMNS.index("image_ref")
+    status_i = COLUMNS.index("status")
+    posted_at_i = COLUMNS.index("posted_at")
+    latest = None
+    for row in rows:
+        if len(row) <= status_i or row[status_i] != "posted":
+            continue
+        if len(row) <= image_ref_i or row[image_ref_i] != image_ref:
+            continue
+        posted_at = row[posted_at_i] if len(row) > posted_at_i else ""
+        if not posted_at:
+            continue
+        try:
+            t = datetime.fromisoformat(posted_at).astimezone(JST)
+        except ValueError:
+            continue
+        if latest is None or t > latest:
+            latest = t
+    return latest
+
+
+def in_cooldown(rows: list[list[str]], image_ref: str, now: datetime) -> bool:
+    """この素材を今投稿すると90日間隔より近すぎるか(旧history.py in_cooldown()相当)。"""
+    last = last_posted_at(rows, image_ref)
+    if last is None:
+        return False
+    return (now - last).total_seconds() / 86400 < REPOST_COOLDOWN_DAYS
+
+
+def schedule_candidates(token: str, spreadsheet_id: str, tab: str, candidates: list[dict]) -> None:
+    """Cowork側が内容だけ決めた候補群(id/date/timeなし)に、次の空き投稿枠を順番に
+    割り当てて追加する。90日再利用禁止にかかる候補はスキップする。
+
+    「1件の失敗や修正が他の投稿に波及しない」という設計方針(post_scheduled.pyと同じ)
+    に合わせ、候補ごとに独立してtry/exceptし、1件のエラーで残りの処理を止めない。"""
+    rows = get_rows(token, spreadsheet_id, tab)
+    occupied = occupied_slots(rows)
+    now = datetime.now(JST)
+    cursor = now
+
+    for i, cand in enumerate(candidates, start=1):
+        try:
+            missing = [k for k in ("account", "image_ref", "caption", "hashtags", "alt") if not cand.get(k)]
+            if missing:
+                raise SystemExit(f"必要なキーがありません: {missing}")
+            image_ref = cand["image_ref"]
+            if in_cooldown(rows, image_ref, now):
+                raise SystemExit(f"{image_ref} は90日再利用禁止の期間内のため候補から除外しました")
+
+            slot = next_slot(cursor)
+            while (f"{slot:%Y-%m-%d}", f"{slot:%H:%M}") in occupied:
+                slot = next_slot(slot)
+            post_id = make_post_id(slot, cand["account"])
+
+            propose_row(
+                token, spreadsheet_id, tab,
+                post_id=post_id, date=f"{slot:%Y-%m-%d}", time=f"{slot:%H:%M}",
+                account=cand["account"], image_ref=image_ref, caption=cand["caption"],
+                hashtags=cand["hashtags"], alt=cand["alt"], notes=cand.get("notes", ""),
+            )
+            occupied.add((f"{slot:%Y-%m-%d}", f"{slot:%H:%M}"))
+            cursor = slot
+        except SystemExit as e:
+            print(f"[{i}件目] スキップ: {e}")
+
 
 # post_scheduled.py の REQUIRED_COLUMNS と同じ並び(A〜P列)
 TEST_ROW = [
@@ -317,18 +438,21 @@ def main(argv: list[str]) -> int:
             raise SystemExit("propose には JSON_FILE が必要です: propose JSON_FILE")
         with open(argv[1], encoding="utf-8") as f:
             data = json.load(f)
-        missing = [
-            k for k in ("id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt")
-            if k not in data
-        ]
-        if missing:
-            raise SystemExit(f"JSON_FILEに必要なキーがありません: {missing}")
-        propose_row(
-            token, spreadsheet_id, tab,
-            post_id=data["id"], date=data["date"], time=data["time"], account=data["account"],
-            image_ref=data["image_ref"], caption=data["caption"], hashtags=data["hashtags"],
-            alt=data["alt"], notes=data.get("notes", ""),
-        )
+        if isinstance(data, list):
+            schedule_candidates(token, spreadsheet_id, tab, data)
+        else:
+            missing = [
+                k for k in ("id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt")
+                if k not in data
+            ]
+            if missing:
+                raise SystemExit(f"JSON_FILEに必要なキーがありません: {missing}")
+            propose_row(
+                token, spreadsheet_id, tab,
+                post_id=data["id"], date=data["date"], time=data["time"], account=data["account"],
+                image_ref=data["image_ref"], caption=data["caption"], hashtags=data["hashtags"],
+                alt=data["alt"], notes=data.get("notes", ""),
+            )
     elif argv[0] == "show":
         if len(argv) < 2:
             raise SystemExit("show には post_id が必要です: show POST_ID")

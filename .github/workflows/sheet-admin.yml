@@ -18,9 +18,11 @@ on:
         required: false
       propose_json:
         description: >-
-          action=propose のときのみ: 候補1件分のJSON(キー: id, date, time,
-          account, image_ref, caption, hashtags, alt, notes(省略可))。
-          Cowork側の投稿案生成タスクが呼ぶ想定。
+          action=propose のときのみ。オブジェクトなら候補1件(id/date/time込み、
+          手動テスト用)。配列なら内容だけの候補群(account, image_ref, caption,
+          hashtags, alt, notes(省略可)。id/date/timeは自動採番)で、次の空き枠を
+          順番に割り当てて追加する。Cowork側は内容を決めるだけで、この呼び出し
+          (Code側)がgit/GitHub操作を一手に担う。
         required: false
 
 permissions:
