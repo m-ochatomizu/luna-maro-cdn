@@ -54,6 +54,14 @@ class RowError(Exception):
     """1行の処理に失敗したことを表す。他の行の処理は止めない。"""
 
 
+class RowCriticalError(Exception):
+    """Instagramへの投稿自体は成功したが、Sheetへの記録に失敗した(要手動確認)。
+
+    この場合、行のstatusをfailedで上書きしてはいけない(既に投稿済みのため)。
+    approvedのまま放置すると次回cron実行で二重投稿される恐れがあるので、
+    ログを大きく出して人間の介入を促す。"""
+
+
 def env(name: str, required: bool = True, default: str | None = None) -> str | None:
     value = os.environ.get(name, default)
     if required and not value:
@@ -389,8 +397,17 @@ def pages_url(cdn_repo: str, cdn_path: str) -> str:
 
 
 def process_row(row: Row, *, source_repo: str, source_token: str,
-                 cdn_repo: str, cdn_token: str, ig_token: str, dry_run: bool) -> dict:
-    """成功時は sheet に書き込むべき更新値を返す。失敗時は RowError を投げる。"""
+                 cdn_repo: str, cdn_token: str, ig_token: str,
+                 sheets_token: str, spreadsheet_id: str, tab: str, col_index: dict[str, int],
+                 dry_run: bool) -> dict:
+    """成功時は sheet に書き込むべき更新値を返す。失敗時は RowError を投げる。
+
+    Instagramへの投稿(ig_publish)が成功した直後に、そこだけを狙って
+    status/posted_at/ig_media_idを即座にSheetへ書き込む(このあとの
+    permalink取得やCDN後片付けで何が起きても、二重投稿を防ぐための
+    記録は既に確定させておくため)。この即時書き込みが失敗した場合は
+    RowCriticalErrorを投げ、呼び出し側(main)がstatus=failedで上書き
+    しないようにする。"""
     v = row.values
     account = v["account"].strip().lower()
     image_ref = v["image_ref"].strip()
@@ -421,6 +438,7 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
     if dry_run:
         log.info("[row %d] DRY_RUN: Instagram投稿をスキップ (image_url=%s)", row.row_number, image_url)
         media_id = "DRY_RUN"
+        now_iso = datetime.now(JST).isoformat(timespec="seconds")
     else:
         log.info("[row %d] 公開ステージングの到達待ち: %s", row.row_number, image_url)
         wait_reachable(image_url)
@@ -429,12 +447,38 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
         creation_id = ig_create_container(image_url, caption_full, alt, ig_token)
         ig_wait_until_ready(creation_id, ig_token)
         media_id = ig_publish(creation_id, ig_token)
+
+        # ここが「投稿済み」の記録が確定する一点(点検の要)。これより後の処理
+        # (permalink取得・CDN後片付け)が失敗しても、次回cronでの二重投稿は
+        # 起こらない。
+        now_iso = datetime.now(JST).isoformat(timespec="seconds")
+        critical_updates = {"status": "posted", "posted_at": now_iso, "ig_media_id": media_id}
+        try:
+            sheets_batch_update_cells(sheets_token, spreadsheet_id, [
+                (f"'{tab}'!{col_letter(col_index[name])}{row.row_number}", value)
+                for name, value in critical_updates.items()
+            ])
+        except Exception as exc:
+            log.critical(
+                "[row %d] Instagramへの投稿は成功しました(media_id=%s)が、Sheetへの記録に"
+                "失敗しました。二重投稿を防ぐため自動リトライはしません。手動で行%dの"
+                "status=posted・ig_media_id=%s・posted_at=%sを記録してください: %s",
+                row.row_number, media_id, row.row_number, media_id, now_iso, exc,
+            )
+            raise RowCriticalError(
+                f"投稿は成功(media_id={media_id})したがSheet記録に失敗: {exc}"
+            ) from exc
+
         permalink = ig_permalink(media_id, ig_token)
 
-        log.info("[row %d] CDNから削除: %s/%s", row.row_number, cdn_repo, cdn_path)
-        github_delete_file(cdn_repo, cdn_path, put_sha, f"staging: {basename} を削除", cdn_token)
+        try:
+            log.info("[row %d] CDNから削除: %s/%s", row.row_number, cdn_repo, cdn_path)
+            github_delete_file(cdn_repo, cdn_path, put_sha, f"staging: {basename} を削除", cdn_token)
+        except Exception as exc:
+            # 投稿・記録は既に成功しているので、staging削除の失敗で行をfailed
+            # 扱いにはしない(残骸は後で手動/別処理で消せばよい)。
+            log.warning("[row %d] CDNのstaging削除に失敗しました(投稿自体は成功済み): %s", row.row_number, exc)
 
-    now_iso = datetime.now(JST).isoformat(timespec="seconds")
     return {
         "status": "posted",
         "posted_at": now_iso,
@@ -479,8 +523,19 @@ def main() -> int:
                 cdn_repo=cdn_repo,
                 cdn_token=cdn_token,
                 ig_token=ig_token,
+                sheets_token=sheets_token,
+                spreadsheet_id=spreadsheet_id,
+                tab=tab,
+                col_index=col_index,
                 dry_run=dry_run,
             )
+        except RowCriticalError as exc:
+            # Instagramへの投稿自体は成功しており、既にログでcritical通知済み。
+            # status=posted以外を書き込むと記録を壊すおそれがあるため、
+            # ここでは何も書き込まず次の行へ進む(要手動確認)。
+            log.error("[row %d] 要手動確認のまま次の行へ進みます: %s", row.row_number, exc)
+            failures += 1
+            continue
         except Exception as exc:  # noqa: BLE001 - 1行の失敗で他行を止めないため意図的に広く捕捉
             log.error("[row %d] 失敗: %s", row.row_number, exc)
             updates = {"status": "failed", "error": str(exc)[:500]}
@@ -494,7 +549,11 @@ def main() -> int:
             (f"'{tab}'!{col_letter(col_index[name])}{row.row_number}", value)
             for name, value in updates.items()
         ]
-        sheets_batch_update_cells(sheets_token, spreadsheet_id, cell_updates)
+        try:
+            sheets_batch_update_cells(sheets_token, spreadsheet_id, cell_updates)
+        except Exception as exc:  # noqa: BLE001 - この書き込みの失敗も他行の処理を止めない
+            log.error("[row %d] シートへの結果書き込みに失敗しました: %s", row.row_number, exc)
+            failures += 1
 
     if failures:
         log.warning("%d件が失敗しました。該当行を確認し、修正後 status を approved に戻してください。", failures)
