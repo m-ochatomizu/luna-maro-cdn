@@ -1,14 +1,11 @@
 name: Instagram scheduled post
 
 on:
-  # 半兵衛レビューによりGO(2026-09-20)。ただし新旧を並行稼働させないため、
-  # README「本番切り替え」手順1(旧方式=Mac常駐launchd+publish.pyの停止)が
-  # 完了し、手順2・3(データ移行・dry_run検証)を終えるまでは schedule を
-  # 無効化しておく。有効にすると staging/ への書き込みが publish.py と
-  # 競合する(luna-maro-cdn を two writers が奪い合う)。
-  # 有効化する場合はコメントアウトを外す:
-  # schedule:
-  #   - cron: "*/15 * * * *"
+  # 半兵衛の軍令により本番運用開始(2026-09-26)。旧Mac+launchdの投稿実行系
+  # (com.creatorbrain.lunamaro.publish)は停止済み(2026-09-23)、最終確認
+  # 6項目も点検済み(欠陥2点は修正・push済み)。火・金19:00 JST(=10:00 UTC)。
+  schedule:
+    - cron: "0 10 * * 2,5"
   workflow_dispatch:
     inputs:
       dry_run:
