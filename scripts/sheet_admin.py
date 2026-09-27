@@ -25,6 +25,8 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # (90日再利用禁止の判定に使う)
     python3 sheet_admin.py show POST_ID
                                         # 指定idの全列を表示
+    python3 sheet_admin.py dump        # 空でない全行の全列を表示
+                                        # (Slack報告とスプレッドシートの内容照合用)
     python3 sheet_admin.py propose JSON_FILE
                                         # JSON_FILEがオブジェクトなら、id/date/time
                                         # まで指定済みの候補を1件そのまま追加する
@@ -332,6 +334,18 @@ def show_row(token: str, spreadsheet_id: str, tab: str, post_id: str) -> None:
     raise SystemExit(f"id={post_id!r} の行が見つかりません")
 
 
+def dump_rows(token: str, spreadsheet_id: str, tab: str) -> None:
+    """空でない全行の全列を表示する(Slack報告との照合用)。"""
+    rows = get_rows(token, spreadsheet_id, tab)
+    for i, row in enumerate(rows, start=1):
+        if not row or not row[0]:
+            continue
+        padded = row + [""] * (len(COLUMNS) - len(row))
+        print(f"--- 行{i} ---")
+        for name, value in zip(COLUMNS, padded):
+            print(f"{name}: {value!r}")
+
+
 def col_letter(index: int) -> str:
     letters = ""
     index += 1
@@ -457,6 +471,8 @@ def main(argv: list[str]) -> int:
         if len(argv) < 2:
             raise SystemExit("show には post_id が必要です: show POST_ID")
         show_row(token, spreadsheet_id, tab, argv[1])
+    elif argv[0] == "dump":
+        dump_rows(token, spreadsheet_id, tab)
     elif argv[0] == "approve":
         if len(argv) < 2:
             raise SystemExit("approve には post_id が必要です: approve POST_ID [APPROVED_BY]")

@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/list/used/show/approve/propose)
+name: Sheet admin (append/clear/list/used/show/dump/approve/propose)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / list / used / show / approve / propose"
+        description: "append / clear / list / used / show / dump / approve / propose"
         required: true
         default: "list"
       row_number:
@@ -74,6 +74,9 @@ jobs:
               ;;
             show)
               python scripts/sheet_admin.py show "$POST_ID"
+              ;;
+            dump)
+              python scripts/sheet_admin.py dump
               ;;
             approve)
               if [ -n "$APPROVED_BY" ]; then
