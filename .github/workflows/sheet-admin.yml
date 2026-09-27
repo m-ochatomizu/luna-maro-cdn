@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/list/used/show/dump/approve/propose)
+name: Sheet admin (append/clear/list/used/show/dump/approve/approve_batch/propose)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / list / used / show / dump / approve / propose"
+        description: "append / clear / list / used / show / dump / approve / approve_batch / propose"
         required: true
         default: "list"
       row_number:
@@ -16,12 +16,14 @@ on:
       approved_by:
         description: "action=approve のときのみ: 承認者表記(省略可)"
         required: false
-      propose_json:
+      batch_json:
         description: >-
-          action=propose のときのみ。オブジェクトなら候補1件(id/date/time込み、
-          手動テスト用)。配列なら内容だけの候補群(account, image_ref, caption,
-          hashtags, alt, notes(省略可)。id/date/timeは自動採番)で、次の空き枠を
-          順番に割り当てて追加する。Cowork側は内容を決めるだけで、この呼び出し
+          action=propose/approve_batch のときのみ。
+          propose: オブジェクトなら候補1件(id/date/time込み、手動テスト用)。配列なら
+          内容だけの候補群(account, image_ref, caption, hashtags, alt, notes(省略可)。
+          id/date/timeは自動採番)で、次の空き枠を順番に割り当てて追加する。
+          approve_batch: {"post_ids": [...], "approved_by": "..."(省略可)}で複数件を
+          まとめて承認する。いずれもCowork側は内容を決めるだけで、この呼び出し
           (Code側)がgit/GitHub操作を一手に担う。
         required: false
 
@@ -45,11 +47,11 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 
-      - name: Write propose payload (action=propose のときのみ使う)
-        if: github.event.inputs.action == 'propose'
-        run: echo "$PROPOSE_JSON" > "$RUNNER_TEMP/propose.json"
+      - name: Write batch payload (action=propose/approve_batch のときのみ使う)
+        if: github.event.inputs.action == 'propose' || github.event.inputs.action == 'approve_batch'
+        run: echo "$BATCH_JSON" > "$RUNNER_TEMP/batch.json"
         env:
-          PROPOSE_JSON: ${{ github.event.inputs.propose_json }}
+          BATCH_JSON: ${{ github.event.inputs.batch_json }}
 
       - name: Run
         env:
@@ -60,7 +62,7 @@ jobs:
           ROW_NUMBER: ${{ github.event.inputs.row_number }}
           POST_ID: ${{ github.event.inputs.post_id }}
           APPROVED_BY: ${{ github.event.inputs.approved_by }}
-          PROPOSE_JSON_PATH: ${{ runner.temp }}/propose.json
+          BATCH_JSON_PATH: ${{ runner.temp }}/batch.json
         run: |
           case "$ACTION" in
             clear)
@@ -86,7 +88,10 @@ jobs:
               fi
               ;;
             propose)
-              python scripts/sheet_admin.py propose "$PROPOSE_JSON_PATH"
+              python scripts/sheet_admin.py propose "$BATCH_JSON_PATH"
+              ;;
+            approve_batch)
+              python scripts/sheet_admin.py approve_batch "$BATCH_JSON_PATH"
               ;;
             *)
               python scripts/sheet_admin.py append

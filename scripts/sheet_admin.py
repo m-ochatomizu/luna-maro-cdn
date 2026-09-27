@@ -54,6 +54,10 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # (半兵衛レビュー・殿承認を経た本番行に対して
                                         # 使う。テスト行専用ではない)。本文に絵文字が
                                         # 無い場合は拒否する(旧post_queue.approve()と同じ)。
+    python3 sheet_admin.py approve_batch JSON_FILE
+                                        # JSON_FILEは{"post_ids": [...], "approved_by":
+                                        # "..."(省略可)}。複数件をまとめて承認する。
+                                        # 1件の失敗が他に波及しないよう独立して処理する。
 """
 from __future__ import annotations
 
@@ -427,6 +431,16 @@ def approve_row(token: str, spreadsheet_id: str, tab: str, post_id: str, approve
     print(f"承認しました: 行{row_number}(id={post_id}, approved_by={approved_by}, approved_at={now_iso})")
 
 
+def approve_batch(token: str, spreadsheet_id: str, tab: str, post_ids: list[str], approved_by: str) -> None:
+    """複数のpost_idをまとめて承認する。1件の失敗(絵文字なし・行が見つからない等)が
+    他のpost_idの承認に波及しないよう、独立してtry/exceptする。"""
+    for post_id in post_ids:
+        try:
+            approve_row(token, spreadsheet_id, tab, post_id, approved_by)
+        except SystemExit as e:
+            print(f"[{post_id}] スキップ: {e}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
         print(__doc__)
@@ -478,6 +492,16 @@ def main(argv: list[str]) -> int:
             raise SystemExit("approve には post_id が必要です: approve POST_ID [APPROVED_BY]")
         approved_by = argv[2] if len(argv) > 2 else "殿承認(半兵衛レビュー済み・Slack)"
         approve_row(token, spreadsheet_id, tab, argv[1], approved_by)
+    elif argv[0] == "approve_batch":
+        if len(argv) < 2:
+            raise SystemExit("approve_batch には JSON_FILE が必要です: approve_batch JSON_FILE")
+        with open(argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+        post_ids = data.get("post_ids")
+        if not isinstance(post_ids, list) or not post_ids:
+            raise SystemExit("JSON_FILEに post_ids(配列) が必要です")
+        approved_by = data.get("approved_by") or "殿承認(半兵衛レビュー済み・Slack)"
+        approve_batch(token, spreadsheet_id, tab, post_ids, approved_by)
     else:
         print(__doc__)
         return 1
