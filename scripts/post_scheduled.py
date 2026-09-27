@@ -35,7 +35,9 @@ JST = ZoneInfo("Asia/Tokyo")
 # そもそも起こせない設計。旧方式のコメントを踏襲)。
 IG_API = os.environ.get("IG_API", "https://graph.instagram.com/v23.0")
 IG_POLL_INTERVAL = 10   # 秒。旧方式(publish.py POLL_INTERVAL)と同じ
-IG_POLL_TIMEOUT = 300   # 秒。旧方式(publish.py POLL_TIMEOUT)と同じ
+IG_POLL_TIMEOUT = 300   # 秒。旧方式(publish.py POLL_TIMEOUT)と同じ(画像用)
+# 動画(Reels)はエンコード処理に時間がかかるため画像より長く待つ(2026-09-27 動画対応)。
+IG_POLL_TIMEOUT_VIDEO = 900  # 秒(15分)
 # GitHub Pages の初回ビルドは数分かかることがある(旧方式で実測済み・2026-08-18)。
 # raw.githubusercontent.com ではなく Pages 経由にする理由も旧方式を踏襲
 # (画像として配信されることが仕様上明確なため・殿裁可2026-08-16)。
@@ -258,20 +260,24 @@ def wait_reachable(url: str) -> None:
         time.sleep(REACH_POLL_INTERVAL)
 
 
-def ig_create_container(image_url: str, caption: str, alt: str, token: str) -> str:
+def ig_create_container(media_url: str, caption: str, alt: str, token: str, *, media_type: str = "photo") -> str:
+    """media_type="video" なら Reels として作成する(video_url + media_type=REELS)。
+    alt_textはReelsでも受理される(Meta公式ドキュメント2025-03時点)。
+    share_to_feedは指定しない(未指定時のAPI既定に従う)。"""
     url = f"{IG_API}/me/media"
+    payload = {
+        "caption": caption,
+        "alt_text": alt,
+        "access_token": token,
+    }
+    if media_type == "video":
+        payload["media_type"] = "REELS"
+        payload["video_url"] = media_url
+    else:
+        payload["image_url"] = media_url
 
     def _do():
-        resp = requests.post(
-            url,
-            data={
-                "image_url": image_url,
-                "caption": caption,
-                "alt_text": alt,
-                "access_token": token,
-            },
-            timeout=60,
-        )
+        resp = requests.post(url, data=payload, timeout=60)
         resp.raise_for_status()
         return resp.json()
 
@@ -281,9 +287,9 @@ def ig_create_container(image_url: str, caption: str, alt: str, token: str) -> s
     return data["id"]
 
 
-def ig_wait_until_ready(creation_id: str, token: str) -> None:
+def ig_wait_until_ready(creation_id: str, token: str, *, timeout: int = IG_POLL_TIMEOUT) -> None:
     url = f"{IG_API}/{creation_id}"
-    deadline = time.monotonic() + IG_POLL_TIMEOUT
+    deadline = time.monotonic() + timeout
     while True:
         resp = requests.get(
             url,
@@ -297,7 +303,7 @@ def ig_wait_until_ready(creation_id: str, token: str) -> None:
         if status == "ERROR":
             raise RowError(f"Instagramのメディア処理がERRORになりました(creation_id={creation_id})")
         if time.monotonic() > deadline:
-            raise RowError(f"Instagramのメディア処理が{IG_POLL_TIMEOUT}秒たっても終わりません(最後の状態 {status})")
+            raise RowError(f"Instagramのメディア処理が{timeout}秒たっても終わりません(最後の状態 {status})")
         time.sleep(IG_POLL_INTERVAL)
 
 
@@ -348,8 +354,10 @@ class Row:
 REQUIRED_COLUMNS = [
     "id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt",
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
-    "permalink", "error", "notes",
+    "permalink", "error", "notes", "media_type",
 ]
+# 空欄(旧行・media_type列追加前の行)は画像として扱う(後方互換)
+VALID_MEDIA_TYPES = ("photo", "illustration", "video")
 
 
 def load_rows(token: str, spreadsheet_id: str, tab: str) -> tuple[list[Row], dict[str, int]]:
@@ -414,10 +422,17 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
     if not image_ref:
         raise RowError("image_ref が空です")
 
-    log.info("[row %d] 画像を取得: %s", row.row_number, image_ref)
+    # media_type列は2026-09-27の動画対応で追加。空欄(旧行)はphoto扱い(後方互換)。
+    # photo/illustrationはどちらも画像として同じ経路で処理し、videoだけ分岐する。
+    media_type_raw = (v.get("media_type") or "photo").strip().lower()
+    if media_type_raw not in VALID_MEDIA_TYPES:
+        raise RowError(f"media_typeが不正です: {media_type_raw!r}({'/'.join(VALID_MEDIA_TYPES)}のいずれか)")
+    is_video = media_type_raw == "video"
+
+    log.info("[row %d] 素材を取得: %s(media_type=%s)", row.row_number, image_ref, media_type_raw)
     content, _ = github_get_file(source_repo, image_ref, source_token)
     if not content:
-        raise RowError(f"ソースリポジトリに画像が見つかりません: {source_repo}/{image_ref}")
+        raise RowError(f"ソースリポジトリに素材が見つかりません: {source_repo}/{image_ref}")
 
     basename = image_ref.rsplit("/", 1)[-1]
     cdn_path = f"staging/{basename}"
@@ -443,9 +458,15 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
         log.info("[row %d] 公開ステージングの到達待ち: %s", row.row_number, image_url)
         wait_reachable(image_url)
 
-        log.info("[row %d] Instagramへ投稿: account=%s", row.row_number, account)
-        creation_id = ig_create_container(image_url, caption_full, alt, ig_token)
-        ig_wait_until_ready(creation_id, ig_token)
+        log.info("[row %d] Instagramへ投稿: account=%s media_type=%s", row.row_number, account, media_type_raw)
+        creation_id = ig_create_container(
+            image_url, caption_full, alt, ig_token,
+            media_type="video" if is_video else "photo",
+        )
+        ig_wait_until_ready(
+            creation_id, ig_token,
+            timeout=IG_POLL_TIMEOUT_VIDEO if is_video else IG_POLL_TIMEOUT,
+        )
         media_id = ig_publish(creation_id, ig_token)
 
         # ここが「投稿済み」の記録が確定する一点(点検の要)。これより後の処理

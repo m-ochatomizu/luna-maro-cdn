@@ -32,17 +32,21 @@ LUNA MARO 配信インフラの公開ステージング領域。投稿直前の�
 
 ### シートの列
 
-`id, date, time, account, image_ref, caption, hashtags, alt, status, approved_by, approved_at, posted_at, ig_media_id, permalink, error, notes`
+`id, date, time, account, image_ref, caption, hashtags, alt, status, approved_by, approved_at, posted_at, ig_media_id, permalink, error, notes, media_type`
 
 - `account`: `luna` または `maro`(投稿する画像がどちらの猫の話題かを示す情報。
   Instagramアカウントは1つしかなく認証情報の選択には使わない。下記参照)
-- `image_ref`: 非公開リポジトリ `luna-maro` 内の画像パス
-- `alt`: 画像の代替テキスト(視覚障害者向け説明文)。旧方式では全投稿に必須で
-  付けていたため、本方式でも引き継ぐ
+- `image_ref`: 非公開リポジトリ `luna-maro` 内の画像/動画パス
+- `alt`: 画像/動画の代替テキスト(視覚障害者向け説明文)。旧方式では全投稿に必須で
+  付けていたため、本方式でも引き継ぐ(Reelsでもalt_textは受理される)
 - `status`: `draft` → `ready_for_review` → `approved` → `posted` / `failed`
   (このスクリプトが書き込むのは `approved` の行に対する `posted`/`failed` のみ)
 - `permalink`: 投稿成功後にInstagramの公開URLを自動で書き込む(取得できなくても
   投稿自体の成否には影響させない)
+- `media_type`: `photo`(既定・空欄も同じ扱い)/ `illustration` / `video`。
+  `video`のみReels(`media_type=REELS`+`video_url`)として投稿する。それ以外は
+  従来通り`image_url`で投稿する(2026-09-27 動画対応)。動画は1本100MB以内
+  (GitHub Blobs APIの実用上限)、9:16・5〜90秒がReelsタブ表示の目安
 
 **Instagramアカウントは「ルナまろ」1つのみ。** 旧方式(`ig_token.py`/
 `publish.py`)を調査した結果、LUNA/MARO用に別アカウント・別トークンが

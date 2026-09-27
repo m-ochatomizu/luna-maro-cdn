@@ -33,7 +33,10 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # (手動テスト用)。
                                         # JSON_FILEが配列なら、Cowork側が内容だけ
                                         # (account/image_ref/caption/hashtags/alt/
-                                        # notes省略可)決めた候補群に、次の空き投稿枠
+                                        # notes・media_type省略可。media_typeは
+                                        # photo(既定)/illustration/videoのいずれか。
+                                        # video指定でReelsとして投稿される)決めた
+                                        # 候補群に、次の空き投稿枠
                                         # (火・金19:00)を順番に割り当てて追加する。
                                         # id/date/timeはこちらで自動採番するため
                                         # 含めない。90日再利用禁止(image_ref)に
@@ -76,8 +79,9 @@ SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 COLUMNS = [
     "id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt",
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
-    "permalink", "error", "notes",
+    "permalink", "error", "notes", "media_type",
 ]
+VALID_MEDIA_TYPES = ("photo", "illustration", "video")
 
 # 以下、旧方式 post_queue.py の validate()/approve() が担っていたブランド運用の
 # 検証ルールを移植したもの(設計書§2.2・§2.4・§2.8、殿指示 2026-08-15/2026-08-20)。
@@ -229,6 +233,7 @@ def schedule_candidates(token: str, spreadsheet_id: str, tab: str, candidates: l
                 post_id=post_id, date=f"{slot:%Y-%m-%d}", time=f"{slot:%H:%M}",
                 account=cand["account"], image_ref=image_ref, caption=cand["caption"],
                 hashtags=cand["hashtags"], alt=cand["alt"], notes=cand.get("notes", ""),
+                media_type=cand.get("media_type", "photo"),
             )
             occupied.add((f"{slot:%Y-%m-%d}", f"{slot:%H:%M}"))
             cursor = slot
@@ -236,7 +241,7 @@ def schedule_candidates(token: str, spreadsheet_id: str, tab: str, candidates: l
             print(f"[{i}件目] スキップ: {e}")
 
 
-# post_scheduled.py の REQUIRED_COLUMNS と同じ並び(A〜P列)
+# post_scheduled.py の REQUIRED_COLUMNS と同じ並び(A〜Q列)
 TEST_ROW = [
     "TEST_dryrun_001",
     "2026-09-24",
@@ -254,6 +259,7 @@ TEST_ROW = [
     "",
     "",
     "dry_run検証用の仮データ。検証後に削除",
+    "photo",
 ]
 
 
@@ -288,7 +294,9 @@ def append_row(token: str, spreadsheet_id: str, tab: str) -> None:
 
 
 def clear_row(token: str, spreadsheet_id: str, tab: str, row_number: int) -> None:
-    rng = f"'{tab}'!A{row_number}:P{row_number}"
+    # COLUMNS全列(media_type追加でQ列まで)をクリアする。Zまで余裕を持たせておけば
+    # 今後列が増えても書き直し不要。
+    rng = f"'{tab}'!A{row_number}:Z{row_number}"
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{rng}:clear"
     resp = requests.post(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     resp.raise_for_status()
@@ -296,7 +304,7 @@ def clear_row(token: str, spreadsheet_id: str, tab: str, row_number: int) -> Non
 
 
 def get_rows(token: str, spreadsheet_id: str, tab: str) -> list[list[str]]:
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!A1:P1000"
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!A1:Z1000"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     resp.raise_for_status()
     return resp.json().get("values", [])
@@ -362,12 +370,15 @@ def col_letter(index: int) -> str:
 def propose_row(
     token: str, spreadsheet_id: str, tab: str, *,
     post_id: str, date: str, time: str, account: str, image_ref: str,
-    caption: str, hashtags: str, alt: str, notes: str,
+    caption: str, hashtags: str, alt: str, notes: str, media_type: str = "photo",
 ) -> None:
     """status=draft で新しい候補行を追加する(Cowork側の投稿案生成タスク用)。
     半兵衛レビュー・殿承認は別途status=approvedへの変更(approveコマンド)で行う
     ため、ここでは絶対にapprovedを書き込まない。"""
     validate_candidate(caption=caption, hashtags=hashtags, alt=alt)
+    media_type = (media_type or "photo").strip().lower()
+    if media_type not in VALID_MEDIA_TYPES:
+        raise SystemExit(f"media_typeが不正です: {media_type!r}({'/'.join(VALID_MEDIA_TYPES)}のいずれか)")
     rows = get_rows(token, spreadsheet_id, tab)
     for row in rows:
         if row and row[0] == post_id:
@@ -375,7 +386,7 @@ def propose_row(
 
     row = [
         post_id, date, time, account, image_ref, caption, hashtags, alt,
-        "draft", "", "", "", "", "", "", notes,
+        "draft", "", "", "", "", "", "", notes, media_type,
     ]
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!A1:append"
     resp = requests.post(
@@ -479,7 +490,7 @@ def main(argv: list[str]) -> int:
                 token, spreadsheet_id, tab,
                 post_id=data["id"], date=data["date"], time=data["time"], account=data["account"],
                 image_ref=data["image_ref"], caption=data["caption"], hashtags=data["hashtags"],
-                alt=data["alt"], notes=data.get("notes", ""),
+                alt=data["alt"], notes=data.get("notes", ""), media_type=data.get("media_type", "photo"),
             )
     elif argv[0] == "show":
         if len(argv) < 2:
