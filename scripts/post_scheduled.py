@@ -56,6 +56,19 @@ class RowError(Exception):
     """1行の処理に失敗したことを表す。他の行の処理は止めない。"""
 
 
+def raise_for_status_verbose(resp: requests.Response) -> None:
+    """resp.raise_for_status()と同じだが、Instagram側のエラー本文(error.message等)を
+    例外メッセージに含める。raise_for_status()単体だとstatus行だけしか残らず、
+    Sheetのerror列を見ても400/403の実際の原因(パラメータ不正など)が分からない
+    (2026-10-01 Reels初回本番投稿の400エラー調査で判明)。"""
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        raise requests.HTTPError(
+            f"{exc} | response body: {resp.text[:500]}", response=resp
+        ) from exc
+
+
 class RowCriticalError(Exception):
     """Instagramへの投稿自体は成功したが、Sheetへの記録に失敗した(要手動確認)。
 
@@ -278,7 +291,7 @@ def ig_create_container(media_url: str, caption: str, alt: str, token: str, *, m
 
     def _do():
         resp = requests.post(url, data=payload, timeout=60)
-        resp.raise_for_status()
+        raise_for_status_verbose(resp)
         return resp.json()
 
     data = with_retry(_do, what="IG media create")
@@ -296,7 +309,7 @@ def ig_wait_until_ready(creation_id: str, token: str, *, timeout: int = IG_POLL_
             params={"fields": "status_code", "access_token": token},
             timeout=30,
         )
-        resp.raise_for_status()
+        raise_for_status_verbose(resp)
         status = resp.json().get("status_code")
         if status == "FINISHED":
             return
@@ -316,7 +329,7 @@ def ig_publish(creation_id: str, token: str) -> str:
             data={"creation_id": creation_id, "access_token": token},
             timeout=60,
         )
-        resp.raise_for_status()
+        raise_for_status_verbose(resp)
         return resp.json()
 
     data = with_retry(_do, what="IG media_publish")
