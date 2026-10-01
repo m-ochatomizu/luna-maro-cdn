@@ -275,18 +275,19 @@ def wait_reachable(url: str) -> None:
 
 def ig_create_container(media_url: str, caption: str, alt: str, token: str, *, media_type: str = "photo") -> str:
     """media_type="video" なら Reels として作成する(video_url + media_type=REELS)。
-    alt_textはReelsでも受理される(Meta公式ドキュメント2025-03時点)。
+    alt_textはREELSでは未対応(2026-10-01 Row23本番投稿の実エラーで判明:
+    "The param alt_text is not supported for REEL")。画像のときだけ付与する。
     share_to_feedは指定しない(未指定時のAPI既定に従う)。"""
     url = f"{IG_API}/me/media"
     payload = {
         "caption": caption,
-        "alt_text": alt,
         "access_token": token,
     }
     if media_type == "video":
         payload["media_type"] = "REELS"
         payload["video_url"] = media_url
     else:
+        payload["alt_text"] = alt
         payload["image_url"] = media_url
 
     def _do():
