@@ -145,7 +145,7 @@ def validate_candidate(*, caption: str, hashtags: str, alt: str) -> None:
 # 「Coworkは内容だけ決め、枠の割り当てとSheetへの書き込み(git/GitHub操作)はCode側が
 # 担当する」という役割分担のため、空き枠の判定にはSheetの現在の状態を読む必要があり、
 # それを行うのは投稿実行(post_scheduled.py)と同じくこちら側の役目になる。
-SLOT_WEEKDAYS = (1, 4)  # 火・金(月曜=0)。増やさない
+SLOT_WEEKDAYS = (1, 4, 6)  # 火・金・日(月曜=0)。2026-10-03 殿裁可により週3回化
 SLOT_HOUR = 19
 SLOT_MINUTE = 0
 REPOST_COOLDOWN_DAYS = 90
