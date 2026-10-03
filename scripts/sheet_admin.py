@@ -61,6 +61,13 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # JSON_FILEは{"post_ids": [...], "approved_by":
                                         # "..."(省略可)}。複数件をまとめて承認する。
                                         # 1件の失敗が他に波及しないよう独立して処理する。
+    python3 sheet_admin.py clear_batch JSON_FILE
+                                        # JSON_FILEは{"row_numbers": [...]}。複数行を
+                                        # まとめてクリアする(propose直後の訂正・
+                                        # 取り消し用。occupied_slotsはstatusを問わず
+                                        # 行の存在だけで枠を埋まった扱いにするため、
+                                        # 取り消すならclearで行自体を空にする必要がある)。
+                                        # 1件の失敗が他に波及しないよう独立して処理する。
 """
 from __future__ import annotations
 
@@ -452,6 +459,16 @@ def approve_batch(token: str, spreadsheet_id: str, tab: str, post_ids: list[str]
             print(f"[{post_id}] スキップ: {e}")
 
 
+def clear_batch(token: str, spreadsheet_id: str, tab: str, row_numbers: list[int]) -> None:
+    """複数行をまとめてクリアする(propose直後の訂正・取り消し用)。1件の失敗が
+    他の行のクリアに波及しないよう、独立してtry/exceptする。"""
+    for row_number in row_numbers:
+        try:
+            clear_row(token, spreadsheet_id, tab, row_number)
+        except requests.RequestException as e:
+            print(f"[行{row_number}] スキップ: {e}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
         print(__doc__)
@@ -468,6 +485,15 @@ def main(argv: list[str]) -> int:
         if len(argv) < 2:
             raise SystemExit("clear には行番号が必要です: clear ROW_NUMBER")
         clear_row(token, spreadsheet_id, tab, int(argv[1]))
+    elif argv[0] == "clear_batch":
+        if len(argv) < 2:
+            raise SystemExit("clear_batch には JSON_FILE が必要です: clear_batch JSON_FILE")
+        with open(argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+        row_numbers = data.get("row_numbers")
+        if not isinstance(row_numbers, list) or not row_numbers:
+            raise SystemExit("JSON_FILEに row_numbers(配列) が必要です")
+        clear_batch(token, spreadsheet_id, tab, [int(n) for n in row_numbers])
     elif argv[0] == "list":
         list_rows(token, spreadsheet_id, tab)
     elif argv[0] == "used":

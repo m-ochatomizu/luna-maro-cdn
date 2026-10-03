@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/list/used/show/dump/approve/approve_batch/propose)
+name: Sheet admin (append/clear/clear_batch/list/used/show/dump/approve/approve_batch/propose)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / list / used / show / dump / approve / approve_batch / propose"
+        description: "append / clear / clear_batch / list / used / show / dump / approve / approve_batch / propose"
         required: true
         default: "list"
       row_number:
@@ -18,12 +18,15 @@ on:
         required: false
       batch_json:
         description: >-
-          action=propose/approve_batch のときのみ。
+          action=propose/approve_batch/clear_batch のときのみ。
           propose: オブジェクトなら候補1件(id/date/time込み、手動テスト用)。配列なら
           内容だけの候補群(account, image_ref, caption, hashtags, alt, notes(省略可)。
           id/date/timeは自動採番)で、次の空き枠を順番に割り当てて追加する。
           approve_batch: {"post_ids": [...], "approved_by": "..."(省略可)}で複数件を
-          まとめて承認する。いずれもCowork側は内容を決めるだけで、この呼び出し
+          まとめて承認する。
+          clear_batch: {"row_numbers": [...]}で複数行をまとめてクリアする
+          (propose直後の訂正・取り消し用)。
+          いずれもCowork側は内容を決めるだけで、この呼び出し
           (Code側)がgit/GitHub操作を一手に担う。
         required: false
 
@@ -47,8 +50,8 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 
-      - name: Write batch payload (action=propose/approve_batch のときのみ使う)
-        if: github.event.inputs.action == 'propose' || github.event.inputs.action == 'approve_batch'
+      - name: Write batch payload (action=propose/approve_batch/clear_batch のときのみ使う)
+        if: github.event.inputs.action == 'propose' || github.event.inputs.action == 'approve_batch' || github.event.inputs.action == 'clear_batch'
         run: echo "$BATCH_JSON" > "$RUNNER_TEMP/batch.json"
         env:
           BATCH_JSON: ${{ github.event.inputs.batch_json }}
@@ -92,6 +95,9 @@ jobs:
               ;;
             approve_batch)
               python scripts/sheet_admin.py approve_batch "$BATCH_JSON_PATH"
+              ;;
+            clear_batch)
+              python scripts/sheet_admin.py clear_batch "$BATCH_JSON_PATH"
               ;;
             *)
               python scripts/sheet_admin.py append
