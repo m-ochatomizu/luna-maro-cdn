@@ -3,9 +3,11 @@ name: Instagram scheduled post
 on:
   # 半兵衛の軍令により本番運用開始(2026-09-26)。旧Mac+launchdの投稿実行系
   # (com.creatorbrain.lunamaro.publish)は停止済み(2026-09-23)、最終確認
-  # 6項目も点検済み(欠陥2点は修正・push済み)。火・金19:00 JST(=10:00 UTC)。
+  # 6項目も点検済み(欠陥2点は修正・push済み)。
+  # 2026-10-03 殿裁可により週2回(火・金)→週3回(火・金・日)19:00 JSTへ変更
+  # (マーケティング観点: 火=SNS利用最安定、日=週内滞在時間最長)。
   schedule:
-    - cron: "0 10 * * 2,5"
+    - cron: "0 10 * * 0,2,5"
   workflow_dispatch:
     inputs:
       dry_run:
