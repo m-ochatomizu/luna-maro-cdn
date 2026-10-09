@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/clear_batch/list/used/show/dump/approve/approve_batch/propose)
+name: Sheet admin (append/clear/clear_batch/list/used/show/dump/approve/approve_batch/propose/reschedule_batch)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / clear_batch / list / used / show / dump / approve / approve_batch / propose"
+        description: "append / clear / clear_batch / list / used / show / dump / approve / approve_batch / propose / reschedule_batch"
         required: true
         default: "list"
       row_number:
@@ -26,6 +26,8 @@ on:
           まとめて承認する。
           clear_batch: {"row_numbers": [...]}で複数行をまとめてクリアする
           (propose直後の訂正・取り消し用)。
+          reschedule_batch: {"post_ids": [...], "time": "18:52"}で複数行のtime列
+          だけをまとめて書き換える(投稿時刻変更時の既存承認済み行の移行用)。
           いずれもCowork側は内容を決めるだけで、この呼び出し
           (Code側)がgit/GitHub操作を一手に担う。
         required: false
@@ -50,8 +52,8 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 
-      - name: Write batch payload (action=propose/approve_batch/clear_batch のときのみ使う)
-        if: github.event.inputs.action == 'propose' || github.event.inputs.action == 'approve_batch' || github.event.inputs.action == 'clear_batch'
+      - name: Write batch payload (action=propose/approve_batch/clear_batch/reschedule_batch のときのみ使う)
+        if: github.event.inputs.action == 'propose' || github.event.inputs.action == 'approve_batch' || github.event.inputs.action == 'clear_batch' || github.event.inputs.action == 'reschedule_batch'
         run: echo "$BATCH_JSON" > "$RUNNER_TEMP/batch.json"
         env:
           BATCH_JSON: ${{ github.event.inputs.batch_json }}
@@ -98,6 +100,9 @@ jobs:
               ;;
             clear_batch)
               python scripts/sheet_admin.py clear_batch "$BATCH_JSON_PATH"
+              ;;
+            reschedule_batch)
+              python scripts/sheet_admin.py reschedule_batch "$BATCH_JSON_PATH"
               ;;
             *)
               python scripts/sheet_admin.py append

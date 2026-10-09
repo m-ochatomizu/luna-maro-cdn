@@ -68,6 +68,13 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # 行の存在だけで枠を埋まった扱いにするため、
                                         # 取り消すならclearで行自体を空にする必要がある)。
                                         # 1件の失敗が他に波及しないよう独立して処理する。
+    python3 sheet_admin.py reschedule_batch JSON_FILE
+                                        # JSON_FILEは{"post_ids": [...], "time": "18:52"}。
+                                        # 複数行のtime列だけをまとめて書き換える
+                                        # (投稿時刻そのものを変更した際、既に承認済み・
+                                        # 未投稿の行を新しい時刻に移行させるために使う。
+                                        # idやdate列は変更しない)。1件の失敗が他に
+                                        # 波及しないよう独立して処理する。
 """
 from __future__ import annotations
 
@@ -146,13 +153,16 @@ def validate_candidate(*, caption: str, hashtags: str, alt: str) -> None:
 # 担当する」という役割分担のため、空き枠の判定にはSheetの現在の状態を読む必要があり、
 # それを行うのは投稿実行(post_scheduled.py)と同じくこちら側の役目になる。
 SLOT_WEEKDAYS = (1, 4, 6)  # 火・金・日(月曜=0)。2026-10-03 殿裁可により週3回化
-SLOT_HOUR = 19
-SLOT_MINUTE = 0
+# 2026-10-09 GitHub Actions schedule不発(火・日・金とも初回発火せず)が続いたため、
+# 毎時0分(=GitHub全体で最混雑)を避けて18:52に変更。instagram-post.yml側のcronも
+# 同時刻へ変更済み(09:52 UTC)。
+SLOT_HOUR = 18
+SLOT_MINUTE = 52
 REPOST_COOLDOWN_DAYS = 90
 
 
 def next_slot(after: datetime) -> datetime:
-    """`after` より後で最初に来る投稿枠(火・金19:00 JST)を返す。"""
+    """`after` より後で最初に来る投稿枠(火・金・日18:52 JST)を返す。"""
     candidate = after.replace(hour=SLOT_HOUR, minute=SLOT_MINUTE, second=0, microsecond=0)
     if candidate <= after:
         candidate += timedelta(days=1)
@@ -469,6 +479,42 @@ def clear_batch(token: str, spreadsheet_id: str, tab: str, row_numbers: list[int
             print(f"[行{row_number}] スキップ: {e}")
 
 
+def reschedule_row(token: str, spreadsheet_id: str, tab: str, post_id: str, new_time: str) -> None:
+    """既存行のtime列だけを書き換える(id文字列やdateは変更しない。idに含まれる
+    時刻表記とtime列がずれても、post_scheduled.py/next_slot()はidを一切解釈せず
+    time列だけを見るため実害はない)。"""
+    rows = get_rows(token, spreadsheet_id, tab)
+    row_number = None
+    for i, row in enumerate(rows, start=1):
+        if row and row[0] == post_id:
+            row_number = i
+            break
+    if row_number is None:
+        raise SystemExit(f"id={post_id!r} の行が見つかりません")
+
+    time_col = col_letter(COLUMNS.index("time"))
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!{time_col}{row_number}"
+    resp = requests.put(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"valueInputOption": "RAW"},
+        json={"values": [[new_time]]},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    print(f"時刻を変更しました: 行{row_number}(id={post_id}, time={new_time})")
+
+
+def reschedule_batch(token: str, spreadsheet_id: str, tab: str, post_ids: list[str], new_time: str) -> None:
+    """複数post_idのtime列をまとめて書き換える(投稿時刻の変更に伴う既存承認済み行の
+    一括移行用)。1件の失敗が他に波及しないよう独立してtry/exceptする。"""
+    for post_id in post_ids:
+        try:
+            reschedule_row(token, spreadsheet_id, tab, post_id, new_time)
+        except (SystemExit, requests.RequestException) as e:
+            print(f"[{post_id}] スキップ: {e}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
         print(__doc__)
@@ -539,6 +585,18 @@ def main(argv: list[str]) -> int:
             raise SystemExit("JSON_FILEに post_ids(配列) が必要です")
         approved_by = data.get("approved_by") or "殿承認(半兵衛レビュー済み・Slack)"
         approve_batch(token, spreadsheet_id, tab, post_ids, approved_by)
+    elif argv[0] == "reschedule_batch":
+        if len(argv) < 2:
+            raise SystemExit("reschedule_batch には JSON_FILE が必要です: reschedule_batch JSON_FILE")
+        with open(argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+        post_ids = data.get("post_ids")
+        new_time = data.get("time")
+        if not isinstance(post_ids, list) or not post_ids:
+            raise SystemExit("JSON_FILEに post_ids(配列) が必要です")
+        if not new_time:
+            raise SystemExit("JSON_FILEに time(例: '18:52') が必要です")
+        reschedule_batch(token, spreadsheet_id, tab, post_ids, new_time)
     else:
         print(__doc__)
         return 1
