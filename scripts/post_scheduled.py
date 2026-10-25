@@ -22,6 +22,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -413,9 +414,13 @@ def is_due(row: Row, now: datetime) -> bool:
 
 def pages_url(cdn_repo: str, cdn_path: str) -> str:
     """旧方式と同じくGitHub Pages経由のURLを使う(raw.githubusercontent.comではない。
-    画像として配信されることが仕様上明確なため・殿裁可2026-08-16)。"""
+    画像として配信されることが仕様上明確なため・殿裁可2026-08-16)。
+    ファイル名の非ASCII文字(全角/特殊記号含む)はパーセントエンコードする。
+    requestsでの到達確認は自動エンコードされるため気づきにくいが、
+    Meta側のメディア取得はエンコードされていないURLを正しく解釈できず
+    "Media download has failed"で失敗する(2026-10-25 row28の実エラーで判明)。"""
     owner, repo = cdn_repo.split("/", 1)
-    return f"https://{owner}.github.io/{repo}/{cdn_path}"
+    return f"https://{owner}.github.io/{repo}/{quote(cdn_path)}"
 
 
 def process_row(row: Row, *, source_repo: str, source_token: str,
