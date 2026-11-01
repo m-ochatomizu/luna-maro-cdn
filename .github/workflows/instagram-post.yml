@@ -56,4 +56,8 @@ jobs:
           # 「ルナまろ」アカウント1つのみ。旧方式(ig_token.py)と同じ
           # Instagramログイン方式のトークン(graph.instagram.com)。
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          # Threadsへの同時投稿は任意(2026-11-01追加)。未設定ならThreads投稿は
+          # 行わずInstagramのみ動作する。設定方法はREADME「Threadsへの同時投稿」参照。
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
         run: python scripts/post_scheduled.py

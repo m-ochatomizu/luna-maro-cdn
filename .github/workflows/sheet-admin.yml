@@ -1,10 +1,10 @@
-name: Sheet admin (append/clear/clear_batch/list/used/show/dump/approve/approve_batch/propose/reschedule_batch)
+name: Sheet admin (append/clear/clear_batch/list/used/show/dump/approve/approve_batch/propose/reschedule_batch/ensure_columns)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "append / clear / clear_batch / list / used / show / dump / approve / approve_batch / propose / reschedule_batch"
+        description: "append / clear / clear_batch / list / used / show / dump / approve / approve_batch / propose / reschedule_batch / ensure_columns"
         required: true
         default: "list"
       row_number:
@@ -103,6 +103,9 @@ jobs:
               ;;
             reschedule_batch)
               python scripts/sheet_admin.py reschedule_batch "$BATCH_JSON_PATH"
+              ;;
+            ensure_columns)
+              python scripts/sheet_admin.py ensure_columns
               ;;
             *)
               python scripts/sheet_admin.py append

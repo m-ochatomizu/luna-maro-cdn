@@ -9,6 +9,14 @@ Instagram Graph API で自動投稿する。
 行い、このスクリプトは approved 以外の行(draft/ready_for_review/rejected/
 posted/failed)には一切書き込まない。
 
+Threadsへの同時投稿(2026-11-01追加): THREADS_ACCESS_TOKEN/THREADS_USER_ID
+が設定されている場合のみ、Instagram投稿と同じ内容(画像/動画・キャプション)
+をThreadsにも投稿する。ThreadsはInstagramと別のAPI・別のアクセストークンの
+ため完全に独立したベストエフォート扱いとし、Threads側の失敗でInstagram側の
+成功(status=posted)を上書きしたり、行全体をfailedにしたりしない
+(結果はthreads_media_id/threads_permalink/threads_error列に記録する。
+これらの列がシートにまだ無い場合は書き込みをスキップする)。
+
 ローカルの git checkout は状態を持たないため(GitHub Contents API のみを
 使用)、以前 Cowork 上の自動化で発生していた git ロックによる詰まりは
 構造的に発生しない。
@@ -357,6 +365,91 @@ def ig_permalink(media_id: str, token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Threads API(Instagramとは別のAPI・別のアクセストークンが必要。2026-11-01追加)
+# ---------------------------------------------------------------------------
+
+THREADS_API = os.environ.get("THREADS_API", "https://graph.threads.net/v1.0")
+THREADS_POLL_INTERVAL = 10  # 秒。IG側と同じ
+THREADS_POLL_TIMEOUT = 300  # 秒(画像用)。IG側と同じ
+THREADS_POLL_TIMEOUT_VIDEO = 900  # 秒(15分)。IG側と同じ
+
+
+def threads_create_container(
+    threads_user_id: str, text: str, token: str, *,
+    media_url: str, alt: str, media_type: str,
+) -> str:
+    """media_type: "IMAGE" または "VIDEO"。IGのme/mediaと同じ二段階作成
+    (コンテナ作成→threads_publish)。"""
+    url = f"{THREADS_API}/{threads_user_id}/threads"
+    payload = {"text": text, "media_type": media_type, "access_token": token}
+    if media_type == "VIDEO":
+        payload["video_url"] = media_url
+    else:
+        payload["image_url"] = media_url
+    if alt:
+        payload["alt_text"] = alt
+
+    def _do():
+        resp = requests.post(url, data=payload, timeout=60)
+        raise_for_status_verbose(resp)
+        return resp.json()
+
+    data = with_retry(_do, what="Threads media create")
+    if not data.get("id"):
+        raise RowError(f"ThreadsのコンテナIDが返りませんでした: {data}")
+    return data["id"]
+
+
+def threads_wait_until_ready(creation_id: str, token: str, *, timeout: int = THREADS_POLL_TIMEOUT) -> None:
+    url = f"{THREADS_API}/{creation_id}"
+    deadline = time.monotonic() + timeout
+    while True:
+        resp = requests.get(
+            url, params={"fields": "status", "access_token": token}, timeout=30,
+        )
+        raise_for_status_verbose(resp)
+        status = resp.json().get("status")
+        if status == "FINISHED":
+            return
+        if status == "ERROR":
+            raise RowError(f"Threadsのメディア処理がERRORになりました(creation_id={creation_id})")
+        if time.monotonic() > deadline:
+            raise RowError(f"Threadsのメディア処理が{timeout}秒たっても終わりません(最後の状態 {status})")
+        time.sleep(THREADS_POLL_INTERVAL)
+
+
+def threads_publish(threads_user_id: str, creation_id: str, token: str) -> str:
+    url = f"{THREADS_API}/{threads_user_id}/threads_publish"
+
+    def _do():
+        resp = requests.post(
+            url, data={"creation_id": creation_id, "access_token": token}, timeout=60,
+        )
+        raise_for_status_verbose(resp)
+        return resp.json()
+
+    data = with_retry(_do, what="Threads media_publish")
+    if not data.get("id"):
+        raise RowError(f"ThreadsのメディアIDが返りませんでした: {data}")
+    return data["id"]
+
+
+def threads_permalink(media_id: str, token: str) -> str:
+    """IGのig_permalink()と同じ判断: 取得できなくても投稿自体は成功しているので
+    空文字を返すだけにする。"""
+    try:
+        resp = requests.get(
+            f"{THREADS_API}/{media_id}",
+            params={"fields": "permalink", "access_token": token},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json().get("permalink", "") or ""
+    except requests.RequestException:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # 行の処理
 # ---------------------------------------------------------------------------
 
@@ -425,6 +518,7 @@ def pages_url(cdn_repo: str, cdn_path: str) -> str:
 
 def process_row(row: Row, *, source_repo: str, source_token: str,
                  cdn_repo: str, cdn_token: str, ig_token: str,
+                 threads_token: str | None, threads_user_id: str | None,
                  sheets_token: str, spreadsheet_id: str, tab: str, col_index: dict[str, int],
                  dry_run: bool) -> dict:
     """成功時は sheet に書き込むべき更新値を返す。失敗時は RowError を投げる。
@@ -469,6 +563,7 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
     caption_full = f"{caption}\n\n{hashtags}" if hashtags else caption
 
     permalink = ""
+    threads_updates: dict[str, str] = {}
     if dry_run:
         log.info("[row %d] DRY_RUN: Instagram投稿をスキップ (image_url=%s)", row.row_number, image_url)
         media_id = "DRY_RUN"
@@ -511,6 +606,36 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
 
         permalink = ig_permalink(media_id, ig_token)
 
+        if threads_token and threads_user_id:
+            # Instagram投稿が成功・記録済みの状態でのみ試す。失敗してもここで
+            # 例外を外へ出さない(Threads側の失敗がInstagram投稿の成否に
+            # 波及しないようにするため)。CDNのstaging画像はこの直後に削除する
+            # ため、削除より前にここでThreads側から同じURLを取得させる必要がある。
+            try:
+                log.info("[row %d] Threadsへ投稿: media_type=%s", row.row_number, media_type_raw)
+                t_creation_id = threads_create_container(
+                    threads_user_id, caption_full, threads_token,
+                    media_url=image_url, alt=alt,
+                    media_type="VIDEO" if is_video else "IMAGE",
+                )
+                threads_wait_until_ready(
+                    t_creation_id, threads_token,
+                    timeout=THREADS_POLL_TIMEOUT_VIDEO if is_video else THREADS_POLL_TIMEOUT,
+                )
+                t_media_id = threads_publish(threads_user_id, t_creation_id, threads_token)
+                threads_updates = {
+                    "threads_media_id": t_media_id,
+                    "threads_permalink": threads_permalink(t_media_id, threads_token),
+                    "threads_error": "",
+                }
+                log.info("[row %d] Threads投稿に成功しました(media_id=%s)", row.row_number, t_media_id)
+            except Exception as exc:  # noqa: BLE001 - Threads失敗をInstagram側に波及させないため意図的に広く捕捉
+                log.error(
+                    "[row %d] Threadsへの投稿に失敗しました(Instagram投稿は既に成功・記録済みのため影響なし): %s",
+                    row.row_number, exc,
+                )
+                threads_updates = {"threads_error": str(exc)[:500]}
+
         try:
             log.info("[row %d] CDNから削除: %s/%s", row.row_number, cdn_repo, cdn_path)
             github_delete_file(cdn_repo, cdn_path, put_sha, f"staging: {basename} を削除", cdn_token)
@@ -519,13 +644,18 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
             # 扱いにはしない(残骸は後で手動/別処理で消せばよい)。
             log.warning("[row %d] CDNのstaging削除に失敗しました(投稿自体は成功済み): %s", row.row_number, exc)
 
-    return {
+    result = {
         "status": "posted",
         "posted_at": now_iso,
         "ig_media_id": media_id,
         "permalink": permalink,
         "error": "",
     }
+    # threads_*列がシートにまだ無い場合(ensure_columns未実施)は書き込みをスキップする
+    # (col_index[name]がKeyErrorになるのを防ぐ。post_scheduled.py自体はこれらの列が
+    # 無くても動作する)。
+    result.update({k: v for k, v in threads_updates.items() if k in col_index})
+    return result
 
 
 def main() -> int:
@@ -543,6 +673,9 @@ def main() -> int:
     cdn_repo = env("CDN_REPO")
     cdn_token = env("CDN_REPO_TOKEN")
     ig_token = env("IG_ACCESS_TOKEN")
+    # Threadsは任意(未設定ならThreads投稿を行わずInstagramのみ。README参照)
+    threads_token = env("THREADS_ACCESS_TOKEN", required=False, default="") or None
+    threads_user_id = env("THREADS_USER_ID", required=False, default="") or None
 
     sheets_token = get_sheets_token(sa_path)
     rows, col_index = load_rows(sheets_token, spreadsheet_id, tab)
@@ -563,6 +696,8 @@ def main() -> int:
                 cdn_repo=cdn_repo,
                 cdn_token=cdn_token,
                 ig_token=ig_token,
+                threads_token=threads_token,
+                threads_user_id=threads_user_id,
                 sheets_token=sheets_token,
                 spreadsheet_id=spreadsheet_id,
                 tab=tab,

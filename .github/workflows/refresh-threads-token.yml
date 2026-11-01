@@ -1,0 +1,32 @@
+name: Refresh Threads access token
+
+on:
+  schedule:
+    # 週1回(IGトークン更新と30分ずらして同時実行を避ける)。Threadsの長期トークンも
+    # 60日で失効するため、週1回の更新なら常に60日よりはるかに手前で更新され続ける。
+    - cron: "30 3 * * 1" # 毎週月曜 12:30 JST
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Refresh Threads access token
+        env:
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          CDN_REPO: ${{ github.repository }}
+          # Secrets APIはデフォルトのGITHUB_TOKENでは操作できないため専用PATが要る。
+          # IGトークン更新と同じPATを再利用する(README参照)。
+          GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: python scripts/refresh_threads_token.py

@@ -68,6 +68,12 @@ propose(空き枠の割り当てとSheetへの追加)・approve等を実行す�
                                         # 行の存在だけで枠を埋まった扱いにするため、
                                         # 取り消すならclearで行自体を空にする必要がある)。
                                         # 1件の失敗が他に波及しないよう独立して処理する。
+    python3 sheet_admin.py ensure_columns
+                                        # ヘッダー行に不足している列(現時点では
+                                        # threads_media_id/threads_permalink/
+                                        # threads_error)を末尾に追記する。既存の
+                                        # 列順・内容は変更しない。Threads同時投稿
+                                        # 対応(2026-11-01)の導入時に1回だけ実行する。
     python3 sheet_admin.py reschedule_batch JSON_FILE
                                         # JSON_FILEは{"post_ids": [...], "time": "18:52"}。
                                         # 複数行のtime列だけをまとめて書き換える
@@ -90,10 +96,13 @@ from google.oauth2 import service_account
 
 JST = ZoneInfo("Asia/Tokyo")
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# threads_media_id/threads_permalink/threads_error は2026-11-01、Threads同時投稿
+# 対応で追加(post_scheduled.py参照)。既存シートにはensure_columnsで追記する。
 COLUMNS = [
     "id", "date", "time", "account", "image_ref", "caption", "hashtags", "alt",
     "status", "approved_by", "approved_at", "posted_at", "ig_media_id",
     "permalink", "error", "notes", "media_type",
+    "threads_media_id", "threads_permalink", "threads_error",
 ]
 VALID_MEDIA_TYPES = ("photo", "illustration", "video")
 
@@ -277,6 +286,7 @@ TEST_ROW = [
     "",
     "dry_run検証用の仮データ。検証後に削除",
     "photo",
+    "", "", "",
 ]
 
 
@@ -404,6 +414,7 @@ def propose_row(
     row = [
         post_id, date, time, account, image_ref, caption, hashtags, alt,
         "draft", "", "", "", "", "", "", notes, media_type,
+        "", "", "",
     ]
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!A1:append"
     resp = requests.post(
@@ -505,6 +516,32 @@ def reschedule_row(token: str, spreadsheet_id: str, tab: str, post_id: str, new_
     print(f"時刻を変更しました: 行{row_number}(id={post_id}, time={new_time})")
 
 
+def ensure_columns(token: str, spreadsheet_id: str, tab: str) -> None:
+    """ヘッダー行(1行目)にCOLUMNSのうち不足している列を末尾に追記する
+    (既存の列順・内容は変更しない)。Threads対応列の追加など、スクリプト側で
+    新しい列が必要になった際に1回だけ実行する想定。"""
+    rows = get_rows(token, spreadsheet_id, tab)
+    if not rows:
+        raise SystemExit(f"シート '{tab}' が空、または見つかりません")
+    header = rows[0]
+    missing = [name for name in COLUMNS if name not in header]
+    if not missing:
+        print("追加すべき列はありません(既に全て存在します)")
+        return
+
+    new_header = header + missing
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/'{tab}'!A1"
+    resp = requests.put(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"valueInputOption": "RAW"},
+        json={"values": [new_header]},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    print(f"列を追加しました: {missing}")
+
+
 def reschedule_batch(token: str, spreadsheet_id: str, tab: str, post_ids: list[str], new_time: str) -> None:
     """複数post_idのtime列をまとめて書き換える(投稿時刻の変更に伴う既存承認済み行の
     一括移行用)。1件の失敗が他に波及しないよう独立してtry/exceptする。"""
@@ -585,6 +622,8 @@ def main(argv: list[str]) -> int:
             raise SystemExit("JSON_FILEに post_ids(配列) が必要です")
         approved_by = data.get("approved_by") or "殿承認(半兵衛レビュー済み・Slack)"
         approve_batch(token, spreadsheet_id, tab, post_ids, approved_by)
+    elif argv[0] == "ensure_columns":
+        ensure_columns(token, spreadsheet_id, tab)
     elif argv[0] == "reschedule_batch":
         if len(argv) < 2:
             raise SystemExit("reschedule_batch には JSON_FILE が必要です: reschedule_batch JSON_FILE")

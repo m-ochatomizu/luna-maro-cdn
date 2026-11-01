@@ -32,7 +32,11 @@ LUNA MARO 配信インフラの公開ステージング領域。投稿直前の�
 
 ### シートの列
 
-`id, date, time, account, image_ref, caption, hashtags, alt, status, approved_by, approved_at, posted_at, ig_media_id, permalink, error, notes, media_type`
+`id, date, time, account, image_ref, caption, hashtags, alt, status, approved_by, approved_at, posted_at, ig_media_id, permalink, error, notes, media_type, threads_media_id, threads_permalink, threads_error`
+
+- `threads_media_id` / `threads_permalink` / `threads_error`: Threadsへの同時投稿
+  (下記「Threadsへの同時投稿」参照)の結果。THREADS_ACCESS_TOKEN未設定の間は
+  常に空欄のまま(Threads投稿自体を行わない)
 
 - `account`: `luna` または `maro`(投稿する画像がどちらの猫の話題かを示す情報。
   Instagramアカウントは1つしかなく認証情報の選択には使わない。下記参照)
@@ -75,6 +79,9 @@ Secrets:
   権限。fine-grained PAT を作成し、対象リポジトリを `luna-maro-cdn` のみに限定、
   Repository permissions の **Secrets を Read and write** のみ付与する(他の権限は
   一切不要)。有効期限は無期限、または定期的に手動更新できる長さに設定する
+- `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID`(任意): Threadsへの同時投稿を使う場合
+  のみ設定する。設定方法は下記「Threadsへの同時投稿」参照。未設定でもInstagram
+  投稿には影響しない
 
 Variables:
 - `SOURCE_REPO`: 例 `m-ochatomizu/luna-maro`
@@ -102,6 +109,59 @@ GitHub Actionsの毎回クリーンなVMで動くため、更新した値をど�
 通知(既定でメール)で気づける。より積極的にSlackへ通知したい場合は、
 Slack Incoming Webhookの secrets を追加して `refresh_ig_token.py` の末尾に
 POSTを1行足すだけで対応できる(現時点では未実装)。
+
+## Threadsへの同時投稿(2026-11-01追加)
+
+Instagramと同じ内容(画像/動画・キャプション)をThreadsにも自動投稿できる。
+**完全に任意の機能**で、`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` を設定しない
+限り何も変わらず、Instagramのみの投稿が今まで通り動く。
+
+ThreadsはInstagramとは別のAPI(`graph.threads.net`)・別のアクセストークンの
+ため、投稿処理内では完全に独立したベストエフォート扱いにしている。Threads側が
+失敗しても、既に成功しているInstagram投稿の記録(`status=posted`)を上書きしたり
+行全体を`failed`にしたりしない。結果は `threads_media_id`/`threads_permalink`/
+`threads_error` 列に記録される(1件の失敗が他に波及しないという設計方針を
+プラットフォーム間にもそのまま適用した形)。
+
+### 初回設定(殿の作業)
+
+Threads APIのアクセストークンはThreadsアカウントの認証を伴うため、Claude Code
+側では発行できない。以下はMeta for Developers上で一度だけ行う作業:
+
+1. [developers.facebook.com](https://developers.facebook.com/apps) で、Instagramに
+   使っている既存の「LUNA MARO 配信」アプリを開く。
+2. 左メニュー「製品を追加」→ **Threads API** を追加する(まだ無ければ)。
+3. アプリが開発モードの場合、ルナまろのThreads/Instagramアカウントを
+   「Threadsテスター」として追加し、Threadsアプリ側の通知またはリンクから招待を
+   承認する。
+4. [Graph API Explorer](https://developers.facebook.com/tools/explorer/) で対象アプリを
+   選択し、権限に `threads_basic` と `threads_content_publish` を選んで
+   「Generate Access Token」。ルナまろの認証情報でログインを求められたら進める
+   → 短期アクセストークンが表示される。
+5. 短期トークンを長期トークン(60日)に交換する(ブラウザのアドレスバーに貼って
+   開くだけでよい。`APP_SECRET`はアプリ「設定→ベーシック」の「アプリシークレット」
+   の「表示」で確認できる):
+   ```
+   https://graph.threads.net/access_token?grant_type=th_exchange_token&client_secret=<APP_SECRET>&access_token=<短期トークン>
+   ```
+   レスポンスの `access_token` が長期トークン。
+6. ThreadsのユーザーIDを取得する(同じく長期トークンでブラウザから開くだけ):
+   ```
+   https://graph.threads.net/v1.0/me?fields=id,username&access_token=<長期トークン>
+   ```
+   `username` がルナまろのアカウントであることを確認し、`id` を控える。
+7. GitHubリポジトリの Settings → Secrets and variables → Actions で以下を追加:
+   - `THREADS_ACCESS_TOKEN`: 手順5で得た長期トークン
+   - `THREADS_USER_ID`: 手順6で得た `id`
+8. `sheet-admin.yml` を `workflow_dispatch` の `action=ensure_columns` で1回だけ
+   実行し、シートに `threads_media_id`/`threads_permalink`/`threads_error` 列を
+   追加する(既存の列・データは変更されない)。
+9. 次回の `instagram-post.yml` 実行(`dry_run: true` での確認を推奨)から、
+   Threadsへの同時投稿が自動で始まる。
+
+以降の長期トークン更新は `.github/workflows/refresh-threads-token.yml` が
+IGトークンと同様に毎週自動で行う(`THREADS_ACCESS_TOKEN` が未設定の間は
+何もせず正常終了する)。
 
 ## 本番切り替え(旧Mac+launchd方式からの移行)
 
