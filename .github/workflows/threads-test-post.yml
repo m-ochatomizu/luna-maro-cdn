@@ -1,0 +1,44 @@
+name: Threads test post (Instagram/Sheetには触れない単発テスト)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "非公開リポジトリ luna-maro 内の画像/動画パス"
+        required: true
+      text:
+        description: "投稿文"
+        required: true
+      media_type:
+        description: "IMAGE または VIDEO"
+        required: false
+        default: "IMAGE"
+
+permissions:
+  contents: write # このリポジトリ(CDN)への staging 画像コミット/削除用
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Run Threads test post
+        working-directory: scripts
+        env:
+          SOURCE_REPO: ${{ vars.SOURCE_REPO }}
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          CDN_REPO: ${{ github.repository }}
+          CDN_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_IMAGE_REF: ${{ github.event.inputs.image_ref }}
+          THREADS_TEXT: ${{ github.event.inputs.text }}
+          THREADS_MEDIA_TYPE: ${{ github.event.inputs.media_type }}
+        run: python threads_test_post.py
