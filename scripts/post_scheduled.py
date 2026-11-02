@@ -10,12 +10,13 @@ Instagram Graph API で自動投稿する。
 posted/failed)には一切書き込まない。
 
 Threadsへの同時投稿(2026-11-01追加): THREADS_ACCESS_TOKEN/THREADS_USER_ID
-が設定されている場合のみ、Instagram投稿と同じ内容(画像/動画・キャプション)
-をThreadsにも投稿する。ThreadsはInstagramと別のAPI・別のアクセストークンの
-ため完全に独立したベストエフォート扱いとし、Threads側の失敗でInstagram側の
-成功(status=posted)を上書きしたり、行全体をfailedにしたりしない
-(結果はthreads_media_id/threads_permalink/threads_error列に記録する。
-これらの列がシートにまだ無い場合は書き込みをスキップする)。
+が設定されている場合のみ、Instagram投稿と同じ画像/動画をThreadsにも投稿する。
+本文はキャプションのみ(ハッシュタグは付けない・殿指示2026-11-02。Instagram側は
+ハッシュタグ込みのまま変更しない)。ThreadsはInstagramと別のAPI・別の
+アクセストークンのため完全に独立したベストエフォート扱いとし、Threads側の
+失敗でInstagram側の成功(status=posted)を上書きしたり、行全体をfailedに
+したりしない(結果はthreads_media_id/threads_permalink/threads_error列に
+記録する。これらの列がシートにまだ無い場合は書き込みをスキップする)。
 
 ローカルの git checkout は状態を持たないため(GitHub Contents API のみを
 使用)、以前 Cowork 上の自動化で発生していた git ロックによる詰まりは
@@ -613,8 +614,10 @@ def process_row(row: Row, *, source_repo: str, source_token: str,
             # ため、削除より前にここでThreads側から同じURLを取得させる必要がある。
             try:
                 log.info("[row %d] Threadsへ投稿: media_type=%s", row.row_number, media_type_raw)
+                # Threadsにはハッシュタグを付けない(殿指示 2026-11-02)。Instagram側は
+                # caption_full(ハッシュタグ込み)のまま変更しない。
                 t_creation_id = threads_create_container(
-                    threads_user_id, caption_full, threads_token,
+                    threads_user_id, caption, threads_token,
                     media_url=image_url, alt=alt,
                     media_type="VIDEO" if is_video else "IMAGE",
                 )

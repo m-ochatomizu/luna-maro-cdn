@@ -112,9 +112,10 @@ POSTを1行足すだけで対応できる(現時点では未実装)。
 
 ## Threadsへの同時投稿(2026-11-01追加)
 
-Instagramと同じ内容(画像/動画・キャプション)をThreadsにも自動投稿できる。
-**完全に任意の機能**で、`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` を設定しない
-限り何も変わらず、Instagramのみの投稿が今まで通り動く。
+Instagramと同じ画像/動画をThreadsにも自動投稿できる。本文はキャプションのみで、
+ハッシュタグは付けない(殿指示2026-11-02。Instagram側はハッシュタグ込みのまま
+変更しない)。**完全に任意の機能**で、`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID`
+を設定しない限り何も変わらず、Instagramのみの投稿が今まで通り動く。
 
 ThreadsはInstagramとは別のAPI(`graph.threads.net`)・別のアクセストークンの
 ため、投稿処理内では完全に独立したベストエフォート扱いにしている。Threads側が
